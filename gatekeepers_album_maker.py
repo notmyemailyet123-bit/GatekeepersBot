@@ -10,7 +10,7 @@ from telegram.ext import (
 from telegram.error import TimedOut, NetworkError, BadRequest
 
 # ========== CONFIG ==========
-BOT_TOKEN = "8302726230:AAGL6A89q7VfsQO5ViQKstGsAntL3f5bdRU"  # Replace this with your real token
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Read from environment variable
 DATA_DIR = Path("user_data")
 DATA_DIR.mkdir(exist_ok=True)
 logging.basicConfig(level=logging.INFO)
