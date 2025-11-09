@@ -1,29 +1,33 @@
-import logging
 import os
+import logging
 import asyncio
 from pathlib import Path
-from telegram import Update, InputMediaPhoto, InputMediaVideo
+from flask import Flask, request, abort
+from telegram import Update, InputMediaPhoto, InputMediaVideo, Bot
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     ContextTypes, ConversationHandler, filters
 )
 from telegram.error import TimedOut, NetworkError, BadRequest
-from flask import Flask
-import threading
 
-# ========== CONFIG ==========
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # set as env variable
+# ======= CONFIG =======
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # e.g., https://yourservice.onrender.com
+PORT = int(os.environ.get("PORT", 10000))
+
+if not BOT_TOKEN or not WEBHOOK_URL:
+    raise ValueError("Set BOT_TOKEN and WEBHOOK_URL as environment variables.")
+
 DATA_DIR = Path("user_data")
 DATA_DIR.mkdir(exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 
-# ========== STATES ==========
+# ======= STATES =======
 FACE, PHOTOS, VIDEOS, NAME, ALIAS, COUNTRY, FAME, SOCIALS, CONFIRM = range(9)
 user_data = {}
 
-# ========== HELPERS ==========
+# ======= HELPERS =======
 def split_evenly(items, max_per_group):
-    """Split items into groups evenly, remainder distributed."""
     if not items:
         return []
     n = len(items)
@@ -99,7 +103,7 @@ async def safe_send_media_group(bot, chat_id, media):
                 raise
     logging.error("Failed after 3 retries.")
 
-# ========== HANDLERS ==========
+# ======= HANDLERS =======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user_data[uid] = {"photos": [], "videos": []}
@@ -131,8 +135,7 @@ async def collect_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return PHOTOS
 
 async def photos_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower() if update.message.text else ""
-    if text in ["next", "done", "finish"]:
+    if update.message.text.lower() in ["next", "done", "finish"]:
         await update.message.reply_text("Got it.\n\nStep 3: Send videos now. Type 'next' when done.")
         return VIDEOS
     return PHOTOS
@@ -148,8 +151,7 @@ async def collect_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return VIDEOS
 
 async def videos_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower() if update.message.text else ""
-    if text in ["next", "done", "finish"]:
+    if update.message.text.lower() in ["next", "done", "finish"]:
         await update.message.reply_text("Step 4: Full name?")
         return NAME
     return VIDEOS
@@ -202,7 +204,6 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     media_photos = [InputMediaPhoto(open(p, "rb")) for p in photos]
     media_videos = [InputMediaVideo(open(v, "rb")) for v in videos]
 
-    # Face photo only once at start
     if face_path and face_path.exists():
         media_photos.insert(0, InputMediaPhoto(open(face_path, "rb")))
 
@@ -229,53 +230,56 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Cancelled. Type /start to begin again.")
     return ConversationHandler.END
 
-# ========== BUILD APP ==========
-def main():
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .connect_timeout(30)
-        .read_timeout(30)
-        .write_timeout(30)
-        .build()
-    )
+# ======= BUILD BOT =======
+app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            FACE: [MessageHandler(filters.PHOTO, face_photo)],
-            PHOTOS: [
-                MessageHandler(filters.PHOTO, collect_photos),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, photos_next),
-            ],
-            VIDEOS: [
-                MessageHandler(filters.VIDEO | filters.ANIMATION, collect_videos),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, videos_next),
-            ],
-            NAME: [MessageHandler(filters.TEXT, get_name)],
-            ALIAS: [MessageHandler(filters.TEXT, get_alias)],
-            COUNTRY: [MessageHandler(filters.TEXT, get_country)],
-            FAME: [MessageHandler(filters.TEXT, get_fame)],
-            SOCIALS: [MessageHandler(filters.TEXT, get_socials)],
-            CONFIRM: [MessageHandler(filters.Regex("^(done|Done|DONE)$"), finalize)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
-    )
+conv = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        FACE: [MessageHandler(filters.PHOTO, face_photo)],
+        PHOTOS: [
+            MessageHandler(filters.PHOTO, collect_photos),
+            MessageHandler(filters.TEXT, photos_next),
+        ],
+        VIDEOS: [
+            MessageHandler(filters.VIDEO | filters.ANIMATION, collect_videos),
+            MessageHandler(filters.TEXT, videos_next),
+        ],
+        NAME: [MessageHandler(filters.TEXT, get_name)],
+        ALIAS: [MessageHandler(filters.TEXT, get_alias)],
+        COUNTRY: [MessageHandler(filters.TEXT, get_country)],
+        FAME: [MessageHandler(filters.TEXT, get_fame)],
+        SOCIALS: [MessageHandler(filters.TEXT, get_socials)],
+        CONFIRM: [MessageHandler(filters.Regex("^(done|Done|DONE)$"), finalize)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
+)
 
-    app.add_handler(conv)
-    logging.info("Bot started.")
+app_bot.add_handler(conv)
 
-    # Start Flask for Render keep-alive
-    flask_app = Flask("keep_alive")
-    @flask_app.route("/")
-    def home():
-        return "Bot is running!"
+# ======= FLASK WEBHOOK =======
+flask_app = Flask(__name__)
 
-    def run_flask():
-        flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+@flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), app_bot.bot)
+        asyncio.run(app_bot.update_queue.put(update))
+        return "OK"
+    else:
+        abort(400)
 
-    threading.Thread(target=run_flask).start()
-    app.run_polling()
+@flask_app.route("/")
+def index():
+    return "Gatekeepers Album Maker is running!"
 
+# ======= MAIN =======
 if __name__ == "__main__":
-    main()
+    # Set webhook
+    bot = Bot(BOT_TOKEN)
+    bot.delete_webhook()
+    bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
+    logging.info(f"Webhook set to {WEBHOOK_URL}/{BOT_TOKEN}")
+    
+    # Run Flask app
+    flask_app.run(host="0.0.0.0", port=PORT)
