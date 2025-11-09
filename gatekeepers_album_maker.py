@@ -2,6 +2,7 @@ import logging
 import os
 import asyncio
 from pathlib import Path
+
 from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -251,7 +252,6 @@ conv = ConversationHandler(
     },
     fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
 )
-
 bot_app.add_handler(conv)
 
 # ========== FLASK APP ==========
@@ -259,22 +259,23 @@ flask_app = Flask(__name__)
 
 @flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
+    """Webhook route for Telegram updates"""
     update = Update.de_json(request.get_json(force=True), bot_app.bot)
-    import asyncio
-    asyncio.create_task(bot_app.update_queue.put(update))
+    loop = asyncio.get_event_loop()
+    asyncio.run_coroutine_threadsafe(bot_app.update_queue.put(update), loop)
     return "ok"
 
 async def set_webhook():
     logging.info("Setting webhook...")
     await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
-    logging.info("Webhook set. Running Flask on port %s.", PORT)
+    logging.info("Webhook set. Flask ready on port %s.", PORT)
 
-# ========== MAIN ==========
+# ========== RUN ==========
 if __name__ == "__main__":
-    import asyncio
+    import threading
 
-    # Set the webhook first
-    asyncio.run(set_webhook())
+    asyncio.run(set_webhook())  # setup webhook first
 
-    # Run Flask server
-    flask_app.run(host="0.0.0.0", port=PORT)
+    # Start Flask server in separate thread
+    flask_thread = threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=PORT))
+    flask_thread.start()
