@@ -202,11 +202,9 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photos = data.get("photos", [])
     videos = data.get("videos", [])
 
-    # Create media objects
     media_photos = [InputMediaPhoto(open(p, "rb")) for p in photos]
     media_videos = [InputMediaVideo(open(v, "rb")) for v in videos]
 
-    # Add face picture only once at start
     if face_path and face_path.exists():
         media_photos.insert(0, InputMediaPhoto(open(face_path, "rb")))
 
@@ -262,7 +260,8 @@ flask_app = Flask(__name__)
 @flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot_app.bot)
-    bot_app.update_queue.put(update)
+    import asyncio
+    asyncio.create_task(bot_app.update_queue.put(update))
     return "ok"
 
 async def set_webhook():
@@ -270,13 +269,12 @@ async def set_webhook():
     await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
     logging.info("Webhook set. Running Flask on port %s.", PORT)
 
+# ========== MAIN ==========
 if __name__ == "__main__":
-    import threading
     import asyncio
 
-    # Run bot's webhook setup in async loop
+    # Set the webhook first
     asyncio.run(set_webhook())
 
-    # Start Flask server in separate thread
-    flask_thread = threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=PORT))
-    flask_thread.start()
+    # Run Flask server
+    flask_app.run(host="0.0.0.0", port=PORT)
