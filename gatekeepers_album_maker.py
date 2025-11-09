@@ -8,9 +8,11 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, filters
 )
 from telegram.error import TimedOut, NetworkError, BadRequest
+from flask import Flask
+import threading
 
 # ========== CONFIG ==========
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Read from Render environment variable
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # set as env variable
 DATA_DIR = Path("user_data")
 DATA_DIR.mkdir(exist_ok=True)
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +23,7 @@ user_data = {}
 
 # ========== HELPERS ==========
 def split_evenly(items, max_per_group):
+    """Split items into groups evenly, remainder distributed."""
     if not items:
         return []
     n = len(items)
@@ -128,7 +131,8 @@ async def collect_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return PHOTOS
 
 async def photos_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.lower() in ["next", "done", "finish"]:
+    text = update.message.text.lower() if update.message.text else ""
+    if text in ["next", "done", "finish"]:
         await update.message.reply_text("Got it.\n\nStep 3: Send videos now. Type 'next' when done.")
         return VIDEOS
     return PHOTOS
@@ -144,7 +148,8 @@ async def collect_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return VIDEOS
 
 async def videos_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.lower() in ["next", "done", "finish"]:
+    text = update.message.text.lower() if update.message.text else ""
+    if text in ["next", "done", "finish"]:
         await update.message.reply_text("Step 4: Full name?")
         return NAME
     return VIDEOS
@@ -197,12 +202,11 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     media_photos = [InputMediaPhoto(open(p, "rb")) for p in photos]
     media_videos = [InputMediaVideo(open(v, "rb")) for v in videos]
 
-    # Add face photo only once at start
+    # Face photo only once at start
     if face_path and face_path.exists():
         media_photos.insert(0, InputMediaPhoto(open(face_path, "rb")))
 
     combined_media = media_photos + media_videos
-
     albums = split_evenly(combined_media, 10)
 
     for i, album in enumerate(albums, 1):
@@ -227,7 +231,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== BUILD APP ==========
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .build()
+    )
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -235,11 +246,11 @@ def main():
             FACE: [MessageHandler(filters.PHOTO, face_photo)],
             PHOTOS: [
                 MessageHandler(filters.PHOTO, collect_photos),
-                MessageHandler(filters.TEXT, photos_next),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, photos_next),
             ],
             VIDEOS: [
                 MessageHandler(filters.VIDEO | filters.ANIMATION, collect_videos),
-                MessageHandler(filters.TEXT, videos_next),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, videos_next),
             ],
             NAME: [MessageHandler(filters.TEXT, get_name)],
             ALIAS: [MessageHandler(filters.TEXT, get_alias)],
@@ -253,27 +264,18 @@ def main():
 
     app.add_handler(conv)
     logging.info("Bot started.")
+
+    # Start Flask for Render keep-alive
+    flask_app = Flask("keep_alive")
+    @flask_app.route("/")
+    def home():
+        return "Bot is running!"
+
+    def run_flask():
+        flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+    threading.Thread(target=run_flask).start()
     app.run_polling()
-
-# ========== FLASK KEEP-ALIVE ==========
-from flask import Flask
-import threading
-
-flask_app = Flask("")
-
-@flask_app.route("/")
-def home():
-    return "Bot is running."
-
-def run():
-    port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host="0.0.0.0", port=port)
-
-def keep_alive():
-    t = threading.Thread(target=run)
-    t.start()
-
-keep_alive()
 
 if __name__ == "__main__":
     main()
