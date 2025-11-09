@@ -1,7 +1,9 @@
 import logging
 import os
 import asyncio
+import threading
 from pathlib import Path
+from flask import Flask
 from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -10,7 +12,7 @@ from telegram.ext import (
 from telegram.error import TimedOut, NetworkError, BadRequest
 
 # ========== CONFIG ==========
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Read from environment variable
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # pulled from Render environment variable
 DATA_DIR = Path("user_data")
 DATA_DIR.mkdir(exist_ok=True)
 logging.basicConfig(level=logging.INFO)
@@ -20,7 +22,6 @@ FACE, PHOTOS, VIDEOS, NAME, ALIAS, COUNTRY, FAME, SOCIALS, CONFIRM = range(9)
 user_data = {}
 
 # ========== HELPERS ==========
-
 def split_evenly(items, max_per_group):
     """Split items into groups that stay close in size and distribute the remainder fairly."""
     if not items:
@@ -101,7 +102,6 @@ async def safe_send_media_group(bot, chat_id, media):
     logging.error("Failed after 3 retries.")
 
 # ========== HANDLERS ==========
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user_data[uid] = {"photos": [], "videos": []}
@@ -199,21 +199,15 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photos = data.get("photos", [])
     videos = data.get("videos", [])
 
-    # Create media objects
     media_photos = [InputMediaPhoto(open(p, "rb")) for p in photos]
     media_videos = [InputMediaVideo(open(v, "rb")) for v in videos]
 
-    # Add face picture only once at start
     if face_path and face_path.exists():
         media_photos.insert(0, InputMediaPhoto(open(face_path, "rb")))
 
-    # Combine all media, ensuring videos always go last
     combined_media = media_photos + media_videos
-
-    # Split evenly, max 10 per group
     albums = split_evenly(combined_media, 10)
 
-    # Send albums
     for i, album in enumerate(albums, 1):
         try:
             await safe_send_media_group(context.bot, update.effective_chat.id, album)
@@ -271,5 +265,16 @@ def main():
     logging.info("Bot started.")
     app.run_polling()
 
+# ========== KEEP-ALIVE FLASK SERVER ==========
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "Gatekeepers Bot is alive!", 200
+
+def run_flask():
+    app_flask.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+
 if __name__ == "__main__":
+    threading.Thread(target=run_flask, daemon=True).start()
     main()
