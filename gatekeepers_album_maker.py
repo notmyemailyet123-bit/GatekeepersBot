@@ -1,9 +1,7 @@
 import logging
 import os
 import asyncio
-import threading
 from pathlib import Path
-from flask import Flask
 from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -12,7 +10,7 @@ from telegram.ext import (
 from telegram.error import TimedOut, NetworkError, BadRequest
 
 # ========== CONFIG ==========
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # pulled from Render environment variable
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Read from Render environment variable
 DATA_DIR = Path("user_data")
 DATA_DIR.mkdir(exist_ok=True)
 logging.basicConfig(level=logging.INFO)
@@ -23,14 +21,12 @@ user_data = {}
 
 # ========== HELPERS ==========
 def split_evenly(items, max_per_group):
-    """Split items into groups that stay close in size and distribute the remainder fairly."""
     if not items:
         return []
     n = len(items)
     num_groups = (n + max_per_group - 1) // max_per_group
     base_size = n // num_groups
     remainder = n % num_groups
-
     groups = []
     start = 0
     for i in range(num_groups):
@@ -81,7 +77,6 @@ def format_output(data):
     )
 
 async def safe_send_media_group(bot, chat_id, media):
-    """Safely send media in groups, splitting if Telegram complains."""
     for attempt in range(3):
         try:
             if not media:
@@ -202,10 +197,12 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     media_photos = [InputMediaPhoto(open(p, "rb")) for p in photos]
     media_videos = [InputMediaVideo(open(v, "rb")) for v in videos]
 
+    # Add face photo only once at start
     if face_path and face_path.exists():
         media_photos.insert(0, InputMediaPhoto(open(face_path, "rb")))
 
     combined_media = media_photos + media_videos
+
     albums = split_evenly(combined_media, 10)
 
     for i, album in enumerate(albums, 1):
@@ -230,14 +227,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== BUILD APP ==========
 def main():
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .connect_timeout(30)
-        .read_timeout(30)
-        .write_timeout(30)
-        .build()
-    )
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -265,16 +255,25 @@ def main():
     logging.info("Bot started.")
     app.run_polling()
 
-# ========== KEEP-ALIVE FLASK SERVER ==========
-app_flask = Flask(__name__)
+# ========== FLASK KEEP-ALIVE ==========
+from flask import Flask
+import threading
 
-@app_flask.route('/')
+flask_app = Flask("")
+
+@flask_app.route("/")
 def home():
-    return "Gatekeepers Bot is alive!", 200
+    return "Bot is running."
 
-def run_flask():
-    app_flask.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+def run():
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host="0.0.0.0", port=port)
+
+def keep_alive():
+    t = threading.Thread(target=run)
+    t.start()
+
+keep_alive()
 
 if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
     main()
