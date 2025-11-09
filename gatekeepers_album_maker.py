@@ -1,136 +1,50 @@
-import logging
 import os
-import asyncio
-import nest_asyncio
-from pathlib import Path
+import logging
 from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
-    ContextTypes, ConversationHandler, filters
+    ConversationHandler, ContextTypes, filters
 )
-from telegram.error import TimedOut, NetworkError, BadRequest
-from flask import Flask, request
+from pathlib import Path
 
-# Apply nest_asyncio to allow async inside Flask threads
-nest_asyncio.apply()
+logging.basicConfig(level=logging.INFO)
 
-# ========== CONFIG ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 if not BOT_TOKEN or not WEBHOOK_URL:
-    raise ValueError("Set BOT_TOKEN and WEBHOOK_URL as environment variables.")
+    raise ValueError("Set BOT_TOKEN and WEBHOOK_URL environment variables.")
 
 DATA_DIR = Path("user_data")
 DATA_DIR.mkdir(exist_ok=True)
-logging.basicConfig(level=logging.INFO)
 
-# ========== STATES ==========
+# Conversation states
 FACE, PHOTOS, VIDEOS, NAME, ALIAS, COUNTRY, FAME, SOCIALS, CONFIRM = range(9)
 user_data = {}
 
-# ========== HELPERS ==========
-def split_evenly(items, max_per_group):
-    if not items:
-        return []
-    n = len(items)
-    num_groups = (n + max_per_group - 1) // max_per_group
-    base_size = n // num_groups
-    remainder = n % num_groups
-    groups = []
-    start = 0
-    for i in range(num_groups):
-        size = base_size + (1 if i < remainder else 0)
-        groups.append(items[start:start + size])
-        start += size
-    return groups
-
-def parse_social_block(text):
-    socials = {"youtube": "", "instagram": "", "tiktok": ""}
-    lines = text.strip().splitlines()
-    for line in lines:
-        if "youtube" in line.lower():
-            socials["youtube"] = line.strip()
-        elif "instagram" in line.lower():
-            socials["instagram"] = line.strip()
-        elif "tiktok" in line.lower():
-            socials["tiktok"] = line.strip()
-    return socials
-
-def parse_link_followers(entry):
-    parts = entry.split()
-    if len(parts) > 1:
-        return parts[0], parts[-1]
-    elif parts:
-        return parts[0], "unknown"
-    else:
-        return "", "unknown"
-
-def format_social(name, entry):
-    if not entry:
-        return f"{name} (  -  ) - "
-    link, followers = parse_link_followers(entry)
-    return f"{name} ( {followers} ) - {link}"
-
-def format_output(data):
-    return (
-        f"^^^^^^^^^^^^^^^\n\n"
-        f"Name: {data.get('name','-')}\n"
-        f"Alias: {data.get('alias','-')}\n"
-        f"Country: {data.get('country','-')}\n"
-        f"Fame: {data.get('fame','-')}\n"
-        f"Top socials: \n"
-        f"{format_social('YouTube', data.get('youtube',''))}\n"
-        f"{format_social('Instagram', data.get('instagram',''))}\n"
-        f"{format_social('TikTok', data.get('tiktok',''))}\n\n"
-        f"==============="
-    )
-
-async def safe_send_media_group(bot, chat_id, media):
-    for attempt in range(3):
-        try:
-            if not media:
-                return
-            return await bot.send_media_group(chat_id=chat_id, media=media)
-        except (TimedOut, NetworkError):
-            logging.warning(f"Timeout, retry {attempt+1}/3...")
-            await asyncio.sleep(2)
-        except BadRequest as e:
-            if "Too many" in str(e):
-                logging.warning("Album too large, splitting...")
-                mid = len(media) // 2
-                await safe_send_media_group(bot, chat_id, media[:mid])
-                await safe_send_media_group(bot, chat_id, media[mid:])
-                return
-            else:
-                raise
-    logging.error("Failed after 3 retries.")
-
-# ========== HANDLERS ==========
+# ======== HANDLERS =========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user_data[uid] = {"photos": [], "videos": []}
-    await update.message.reply_text("Welcome to Gatekeepers Album Maker.\n\nStep 1: Send a clear face picture.")
+    await update.message.reply_text("Send a face picture to start.")
     return FACE
 
 async def face_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    try:
-        photo = update.message.photo[-1]
-        f = await photo.get_file()
-        path = DATA_DIR / f"{uid}_face.jpg"
-        await f.download_to_drive(path)
-        user_data[uid]["face_path"] = path
-        await update.message.reply_text("Got it.\n\nStep 2: Send all photos. Type 'next' when done.")
-        return PHOTOS
-    except Exception as e:
-        logging.error(e)
-        await update.message.reply_text("Error saving face photo. Try again.")
-        return FACE
+    photo = update.message.photo[-1]
+    f = await photo.get_file()
+    path = DATA_DIR / f"{uid}_face.jpg"
+    await f.download_to_drive(path)
+    user_data[uid]["face_path"] = path
+    await update.message.reply_text("Face saved. Now send all photos. Type 'next' when done.")
+    return PHOTOS
 
 async def collect_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    if update.message.text and update.message.text.lower() == "next":
+        await update.message.reply_text("Now send videos. Type 'next' when done.")
+        return VIDEOS
     photo = update.message.photo[-1]
     f = await photo.get_file()
     path = DATA_DIR / f"{uid}_{os.path.basename(f.file_path)}"
@@ -138,14 +52,11 @@ async def collect_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[uid]["photos"].append(path)
     return PHOTOS
 
-async def photos_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.lower() in ["next", "done", "finish"]:
-        await update.message.reply_text("Got it.\n\nStep 3: Send videos now. Type 'next' when done.")
-        return VIDEOS
-    return PHOTOS
-
 async def collect_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    if update.message.text and update.message.text.lower() == "next":
+        await update.message.reply_text("Send full name:")
+        return NAME
     file = update.message.video or update.message.animation
     if file:
         f = await file.get_file()
@@ -154,97 +65,60 @@ async def collect_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[uid]["videos"].append(path)
     return VIDEOS
 
-async def videos_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.lower() in ["next", "done", "finish"]:
-        await update.message.reply_text("Step 4: Full name?")
-        return NAME
-    return VIDEOS
-
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    user_data[uid]["name"] = update.message.text.strip()
-    await update.message.reply_text("Step 5: Alias or handle?")
+    user_data[uid]["name"] = update.message.text
+    await update.message.reply_text("Send alias/handle:")
     return ALIAS
 
 async def get_alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    user_data[uid]["alias"] = update.message.text.strip()
-    await update.message.reply_text("Step 6: Country?")
+    user_data[uid]["alias"] = update.message.text
+    await update.message.reply_text("Send country:")
     return COUNTRY
 
 async def get_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    user_data[uid]["country"] = update.message.text.strip()
-    await update.message.reply_text("Step 7: Why are they famous?")
+    user_data[uid]["country"] = update.message.text
+    await update.message.reply_text("Why are they famous?")
     return FAME
 
 async def get_fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    user_data[uid]["fame"] = update.message.text.strip()
-    await update.message.reply_text(
-        "Step 8: Send all social links in one message.\n\n"
-        "Example:\nYouTube: https://youtube.com/... 2M\n"
-        "Instagram: https://instagram.com/... 150k\n"
-        "TikTok: https://tiktok.com/... 500k"
-    )
+    user_data[uid]["fame"] = update.message.text
+    await update.message.reply_text("Send socials (YouTube/Instagram/TikTok) in one message.")
     return SOCIALS
 
 async def get_socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    socials = parse_social_block(update.message.text)
+    lines = update.message.text.splitlines()
+    socials = {}
+    for line in lines:
+        if "youtube" in line.lower(): socials["youtube"] = line.strip()
+        if "instagram" in line.lower(): socials["instagram"] = line.strip()
+        if "tiktok" in line.lower(): socials["tiktok"] = line.strip()
     user_data[uid].update(socials)
-    await update.message.reply_text("Step 9: Type 'done' to assemble.")
+    await update.message.reply_text("Type 'done' to finish.")
     return CONFIRM
 
 async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     data = user_data[uid]
-    await update.message.reply_text("Assembling albums... please wait.")
-
-    face_path = data.get("face_path")
-    photos = data.get("photos", [])
-    videos = data.get("videos", [])
-
-    media_photos = [InputMediaPhoto(open(p, "rb")) for p in photos]
-    media_videos = [InputMediaVideo(open(v, "rb")) for v in videos]
-
-    if face_path and face_path.exists():
-        media_photos.insert(0, InputMediaPhoto(open(face_path, "rb")))
-
-    combined_media = media_photos + media_videos
-    albums = split_evenly(combined_media, 10)
-
-    for i, album in enumerate(albums, 1):
-        try:
-            await safe_send_media_group(context.bot, update.effective_chat.id, album)
-        except Exception as e:
-            logging.error(f"Album {i} failed: {e}")
-            await update.message.reply_text(f"⚠️ Album {i} failed. Skipping...")
-
-    await update.message.reply_text(format_output(data))
-    await update.message.reply_text("✅ Done! Type /restart to start over.")
+    msg = f"Name: {data.get('name')}\nAlias: {data.get('alias')}\nCountry: {data.get('country')}\nFame: {data.get('fame')}\nSocials: {data.get('youtube','')}, {data.get('instagram','')}, {data.get('tiktok','')}"
+    await update.message.reply_text(msg)
     return ConversationHandler.END
-
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data.pop(update.effective_user.id, None)
-    await update.message.reply_text("Restarted. Send a face picture to begin.")
-    return FACE
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Cancelled. Type /start to begin again.")
+    await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
 
-# ========== BUILD BOT ==========
-bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-conv = ConversationHandler(
+# ======== BOT SETUP =========
+conv_handler = ConversationHandler(
     entry_points=[CommandHandler("start", start)],
     states={
         FACE: [MessageHandler(filters.PHOTO, face_photo)],
-        PHOTOS: [MessageHandler(filters.PHOTO, collect_photos),
-                 MessageHandler(filters.TEXT, photos_next)],
-        VIDEOS: [MessageHandler(filters.VIDEO | filters.ANIMATION, collect_videos),
-                 MessageHandler(filters.TEXT, videos_next)],
+        PHOTOS: [MessageHandler(filters.PHOTO | filters.TEXT, collect_photos)],
+        VIDEOS: [MessageHandler(filters.VIDEO | filters.ANIMATION | filters.TEXT, collect_videos)],
         NAME: [MessageHandler(filters.TEXT, get_name)],
         ALIAS: [MessageHandler(filters.TEXT, get_alias)],
         COUNTRY: [MessageHandler(filters.TEXT, get_country)],
@@ -252,31 +126,18 @@ conv = ConversationHandler(
         SOCIALS: [MessageHandler(filters.TEXT, get_socials)],
         CONFIRM: [MessageHandler(filters.Regex("^(done|Done|DONE)$"), finalize)],
     },
-    fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
+    fallbacks=[CommandHandler("cancel", cancel)]
 )
-bot_app.add_handler(conv)
 
-# ========== FLASK APP ==========
-flask_app = Flask(__name__)
-
-@flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot_app.bot)
-    loop = asyncio.get_event_loop()
-    loop.create_task(bot_app.update_queue.put(update))
-    return "ok"
-
-async def set_webhook():
-    logging.info("Setting webhook...")
-    await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
-    logging.info("Webhook set. Flask ready on port %s.", PORT)
+app = ApplicationBuilder().token(BOT_TOKEN).build()
+app.add_handler(conv_handler)
 
 if __name__ == "__main__":
-    import threading
-
-    # Run bot webhook setup
-    asyncio.run(set_webhook())
-
-    # Start Flask in a separate thread
-    flask_thread = threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=PORT))
-    flask_thread.start()
+    # Run webhook server directly (production-ready)
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
+        webhook_cert=None,
+        key=None,
+    )
