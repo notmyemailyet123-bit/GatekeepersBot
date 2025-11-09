@@ -1,8 +1,8 @@
 import logging
 import os
 import asyncio
+import nest_asyncio
 from pathlib import Path
-
 from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -10,6 +10,9 @@ from telegram.ext import (
 )
 from telegram.error import TimedOut, NetworkError, BadRequest
 from flask import Flask, request
+
+# Apply nest_asyncio to allow async inside Flask threads
+nest_asyncio.apply()
 
 # ========== CONFIG ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -35,7 +38,6 @@ def split_evenly(items, max_per_group):
     num_groups = (n + max_per_group - 1) // max_per_group
     base_size = n // num_groups
     remainder = n % num_groups
-
     groups = []
     start = 0
     for i in range(num_groups):
@@ -259,10 +261,9 @@ flask_app = Flask(__name__)
 
 @flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    """Webhook route for Telegram updates"""
     update = Update.de_json(request.get_json(force=True), bot_app.bot)
     loop = asyncio.get_event_loop()
-    asyncio.run_coroutine_threadsafe(bot_app.update_queue.put(update), loop)
+    loop.create_task(bot_app.update_queue.put(update))
     return "ok"
 
 async def set_webhook():
@@ -270,12 +271,12 @@ async def set_webhook():
     await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
     logging.info("Webhook set. Flask ready on port %s.", PORT)
 
-# ========== RUN ==========
 if __name__ == "__main__":
     import threading
 
-    asyncio.run(set_webhook())  # setup webhook first
+    # Run bot webhook setup
+    asyncio.run(set_webhook())
 
-    # Start Flask server in separate thread
+    # Start Flask in a separate thread
     flask_thread = threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=PORT))
     flask_thread.start()
