@@ -15,7 +15,7 @@ from telegram.ext import (
 FACE, PHOTOS, VIDEOS, NAME, ALIAS, COUNTRY, FAME, SOCIALS, DONE = range(9)
 user_data_store = {}
 
-# Split media into even albums
+# Split photos/videos evenly
 def split_albums(media_list):
     n = len(media_list)
     if n <= 10:
@@ -23,15 +23,14 @@ def split_albums(media_list):
     num_albums = ceil(n / 10)
     per_album = n // num_albums
     remainder = n % num_albums
-    albums = []
-    start = 0
+    albums, start = [], 0
     for i in range(num_albums):
         end = start + per_album + (1 if i < remainder else 0)
         albums.append(media_list[start:end])
         start = end
     return albums
 
-# Start or restart
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data_store[user_id] = {
@@ -39,21 +38,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "name": "", "alias": "", "country": "",
         "fame": "", "socials": {}
     }
-    await update.message.reply_text("Welcome to Gatekeepers Album Maker! Send the celebrity’s **face photo** to start.")
+    await update.message.reply_text(
+        "👋 Welcome to *Gatekeepers Album Maker!*\n\nPlease send the celebrity’s **face photo** to start.",
+        parse_mode="Markdown"
+    )
     return FACE
 
-# Step 1: Face photo
+# Step 1 — Face photo
 async def face_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if update.message.photo:
         user_data_store[user_id]["face"] = update.message.photo[-1].file_id
         keyboard = [[InlineKeyboardButton("Next ➡️", callback_data="done_photos")]]
-        await update.message.reply_text("Face photo saved. Now send all **other photos**, then tap 'Next' when finished.", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(
+            "✅ Face photo saved.\n\nNow send all **other photos** (the content ones). Tap *Next* when done.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
         return PHOTOS
-    await update.message.reply_text("Please send a valid face photo.")
+    await update.message.reply_text("⚠️ Please send a valid photo.")
     return FACE
 
-# Step 2: Additional photos
+# Step 2 — Content photos
 async def photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.photo:
         user_data_store[update.effective_user.id]["photos"].append(update.message.photo[-1].file_id)
@@ -63,10 +69,14 @@ async def done_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     keyboard = [[InlineKeyboardButton("Next ➡️", callback_data="done_videos")]]
-    await query.edit_message_text("Photos saved. Now send **videos or GIFs**, then tap 'Next' when finished.", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.message.reply_text(
+        "📸 Photos saved.\n\nNow send **videos or GIFs** and tap *Next* when finished.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
     return VIDEOS
 
-# Step 3: Videos
+# Step 3 — Videos
 async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if update.message.video:
@@ -78,10 +88,10 @@ async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def done_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Videos saved. Now send the celebrity’s **full name**.")
+    await query.message.reply_text("🎬 Videos saved.\n\nSend the celebrity’s **full name.**")
     return NAME
 
-# Step 4–8: Text info
+# Step 4–8 — Basic info
 async def name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data_store[update.effective_user.id]["name"] = update.message.text
     await update.message.reply_text("Send the celebrity’s **aliases or handles** (comma-separated).")
@@ -89,18 +99,18 @@ async def name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data_store[update.effective_user.id]["alias"] = update.message.text
-    await update.message.reply_text("Send the celebrity’s **country of origin**.")
+    await update.message.reply_text("Send the celebrity’s **country of origin.**")
     return COUNTRY
 
 async def country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data_store[update.effective_user.id]["country"] = update.message.text
-    await update.message.reply_text("What is the celebrity famous for?")
+    await update.message.reply_text("🌟 What is this celebrity famous for?")
     return FAME
 
 async def fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data_store[update.effective_user.id]["fame"] = update.message.text
     await update.message.reply_text(
-        "Now send **social media links** with follower counts.\n\n"
+        "Now send **social media links** followed by follower counts.\n\n"
         "Example:\n"
         "https://www.instagram.com/example 5.7M,\n"
         "https://youtube.com/@example 118K,\n"
@@ -109,7 +119,7 @@ async def fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return SOCIALS
 
-# Step 9: Parse socials automatically
+# Step 9 — Socials parsing
 async def socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
@@ -121,33 +131,32 @@ async def socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not entry:
             continue
         parts = entry.split()
-        if len(parts) >= 2:
-            link, followers = parts[0].strip(), parts[1].strip()
-        else:
-            link, followers = parts[0].strip(), "x"
-        try:
-            parsed = urlparse(link)
-            domain = parsed.netloc.lower()
-            platform = domain.replace("www.", "").split(".")[0].capitalize()
-        except Exception:
-            platform = "Unknown"
+        link = parts[0].strip()
+        followers = parts[1].strip() if len(parts) > 1 else "x"
+        parsed = urlparse(link)
+        domain = parsed.netloc.lower()
+        platform = domain.replace("www.", "").split(".")[0].capitalize()
         socials_dict[platform] = (link, followers)
 
     user_data_store[user_id]["socials"] = socials_dict
     keyboard = [[InlineKeyboardButton("Done ✅", callback_data="finalize")]]
-    await update.message.reply_text("Socials saved. Tap **Done ✅** to generate albums and summary.", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        "🌐 Social links saved.\n\nTap **Done** when ready to create albums and summary.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
     return DONE
 
-# Step 10: Finalize
+# Step 10 — Final summary and albums
 async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     data = user_data_store[user_id]
+
     all_media = [data["face"]] + data["photos"] + data["videos"]
     albums = split_albums(all_media)
 
-    # Send albums
     for album in albums:
         media_group = []
         for fid in album:
@@ -157,7 +166,6 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 media_group.append(InputMediaVideo(fid))
         await query.message.reply_media_group(media_group)
 
-    # Prepare socials
     socials_text = ""
     for platform, (link, followers) in sorted(data["socials"].items()):
         socials_text += f"{platform} ({followers}) - {link}\n"
@@ -172,7 +180,6 @@ Top socials:
 {socials_text}
 ==============="""
 
-    # Ask to restart
     keyboard = [
         [InlineKeyboardButton("Restart 🔁", callback_data="restart"),
          InlineKeyboardButton("Exit 🚪", callback_data="exit")]
@@ -180,21 +187,25 @@ Top socials:
     await query.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(keyboard))
     return ConversationHandler.END
 
-# Restart button callback
+# Restart or Exit
 async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Restarting bot...")
-    return await start(update, context)
+    await query.message.reply_text("🔁 Restarting process...\n\nPlease send the celebrity’s **face photo** to start again.")
+    user_data_store[query.from_user.id] = {
+        "face": None, "photos": [], "videos": [],
+        "name": "", "alias": "", "country": "",
+        "fame": "", "socials": {}
+    }
+    return FACE
 
-# Exit button callback
 async def exit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Thanks for using Gatekeepers Album Maker! 👋")
+    await query.message.reply_text("👋 Thanks for using Gatekeepers Album Maker!")
     return ConversationHandler.END
 
-# Main app
+# Main
 def main():
     bot_token = os.getenv("BOT_TOKEN")
     app = ApplicationBuilder().token(bot_token).build()
