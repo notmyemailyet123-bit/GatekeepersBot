@@ -20,17 +20,16 @@ from telegram.ext import (
 )
 import requests
 
-# Logging
+# Logging setup
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Telegram bot token from Render environment variable
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
-# State constants
+# Conversation states
 (
     STATE_FACE,
     STATE_PHOTOS,
@@ -43,23 +42,19 @@ WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
     STATE_FINAL_CONFIRM,
 ) = range(9)
 
-# Buttons
 BTN_NEXT = "Next"
 BTN_DONE = "Done"
 
-# Temporary data storage
 user_data = {}
 
-# Flask setup
 app = Flask(__name__)
 
-# Helper
 def get_user_key(update: Update) -> str:
     return str(update.effective_user.id)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Welcome to the Gatekeepers Album Maker! Please send your face photo to begin."
+        "Welcome to the Gatekeepers Album Maker! Please send your normal face photo to begin."
     )
     return STATE_FACE
 
@@ -74,7 +69,7 @@ async def face_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_data[user_key]["face"] = file_path
 
     await update.message.reply_text(
-        "Got it! Now, please send your gallery photos. When done, tap Next.",
+        "Got it! Now send all the photos you want to include. When you’re done, tap Next.",
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton(BTN_NEXT)]], resize_keyboard=True),
     )
     return STATE_PHOTOS
@@ -86,12 +81,12 @@ async def photos_collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_path = os.path.join(tempfile.gettempdir(), f"{user_key}_photo_{len(user_data[user_key]['photos'])}.jpg")
     await file.download_to_drive(file_path)
     user_data[user_key]["photos"].append(file_path)
-    await update.message.reply_text("Photo saved! You can send more or press Next.")
+    await update.message.reply_text("Photo saved! You can send more or tap Next.")
     return STATE_PHOTOS
 
 async def photos_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Now send your videos. When done, tap Next.",
+        "Now send all videos or GIFs you want to include. When you’re done, tap Next.",
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton(BTN_NEXT)]], resize_keyboard=True),
     )
     return STATE_VIDEOS
@@ -99,11 +94,12 @@ async def photos_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def videos_collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_key = get_user_key(update)
     file_id = None
+
     if update.message.video:
         file_id = update.message.video.file_id
     elif update.message.animation:
         file_id = update.message.animation.file_id
-    elif update.message.document and "video" in update.message.document.mime_type:
+    elif update.message.document and "video" in (update.message.document.mime_type or ""):
         file_id = update.message.document.file_id
 
     if file_id:
@@ -111,34 +107,34 @@ async def videos_collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = os.path.join(tempfile.gettempdir(), f"{user_key}_video_{len(user_data[user_key]['videos'])}.mp4")
         await file.download_to_drive(file_path)
         user_data[user_key]["videos"].append(file_path)
-        await update.message.reply_text("Video saved! Send more or press Next.")
+        await update.message.reply_text("Video saved! Send more or tap Next.")
     else:
         await update.message.reply_text("That doesn’t look like a video. Try again.")
     return STATE_VIDEOS
 
 async def videos_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("What's your full name?")
+    await update.message.reply_text("What’s the celebrity’s full name?")
     return STATE_NAME
 
 async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[get_user_key(update)]["name"] = update.message.text
-    await update.message.reply_text("Got it. What's your alias or stage name?")
+    await update.message.reply_text("Got it. What’s their alias or social handle?")
     return STATE_ALIAS
 
 async def receive_alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[get_user_key(update)]["alias"] = update.message.text
-    await update.message.reply_text("Cool. What country are you from?")
+    await update.message.reply_text("Cool. What country are they from?")
     return STATE_COUNTRY
 
 async def receive_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[get_user_key(update)]["country"] = update.message.text
-    await update.message.reply_text("What are you known for?")
+    await update.message.reply_text("Why are they famous?")
     return STATE_FAME
 
 async def receive_fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[get_user_key(update)]["fame"] = update.message.text
     await update.message.reply_text(
-        "Now send your social media links. When done, tap Done.",
+        "Now send all their social media links. When finished, tap Done.",
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton(BTN_DONE)]], resize_keyboard=True),
     )
     return STATE_SOCIALS
@@ -146,7 +142,7 @@ async def receive_fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def socials_collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_key = get_user_key(update)
     user_data[user_key]["socials"].append(update.message.text)
-    await update.message.reply_text("Link added! Send more or tap Done.")
+    await update.message.reply_text("Link added! You can send more or tap Done.")
     return STATE_SOCIALS
 
 async def finalize_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,23 +150,20 @@ async def finalize_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = user_data[user_key]
     await update.message.reply_text("Building your album... please wait ⏳")
 
-    # Simulated upload
-    album_summary = (
-        f"Face: {data['face']}\n"
-        f"Photos: {len(data['photos'])}\n"
-        f"Videos: {len(data['videos'])}\n"
+    # Create final text summary
+    summary = (
         f"Name: {data['name']}\n"
         f"Alias: {data['alias']}\n"
         f"Country: {data['country']}\n"
         f"Fame: {data['fame']}\n"
-        f"Socials: {', '.join(data['socials'])}"
+        f"Top socials:\n" + "\n".join(data["socials"])
     )
-    await update.message.reply_text("✅ Album created!\n\n" + album_summary)
+    await update.message.reply_text("✅ Album created!\n\n" + summary)
     return ConversationHandler.END
 
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[get_user_key(update)] = {"face": None, "photos": [], "videos": [], "socials": []}
-    await update.message.reply_text("Restarted! Send your face photo again.")
+    await update.message.reply_text("Restarted! Please send your face photo again.")
     return STATE_FACE
 
 def create_app():
@@ -184,16 +177,17 @@ def create_app():
                 CommandHandler("restart", restart),
             ],
             STATE_PHOTOS: [
-                MessageHandler(filters.TEXT & filters.Regex(re.compile(f'^{re.escape(BTN_NEXT)}$', re.I)), photos_next),
+                MessageHandler(filters.TEXT & filters.Regex(re.compile(f"^{re.escape(BTN_NEXT)}$", re.I)), photos_next),
                 MessageHandler(filters.PHOTO & ~filters.COMMAND, photos_collector),
                 CommandHandler("restart", restart),
             ],
             STATE_VIDEOS: [
-                MessageHandler(filters.TEXT & filters.Regex(re.compile(f'^{re.escape(BTN_NEXT)}$', re.I)), videos_next),
+                MessageHandler(filters.TEXT & filters.Regex(re.compile(f"^{re.escape(BTN_NEXT)}$", re.I)), videos_next),
                 MessageHandler(
                     filters.VIDEO
                     | filters.ANIMATION
-                    | (filters.Document.ATTR("mime_type") & filters.Regex("video")),
+                    | filters.Document.MimeType("video/")
+                    | filters.Create(lambda m: m.document and "video" in (m.document.mime_type or "")),
                     videos_collector,
                 ),
                 CommandHandler("restart", restart),
@@ -216,10 +210,7 @@ def create_app():
             ],
             STATE_SOCIALS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, socials_collector),
-                CommandHandler("restart", restart),
-            ],
-            STATE_FINAL_CONFIRM: [
-                MessageHandler(filters.TEXT & filters.Regex(re.compile(f'^{re.escape(BTN_DONE)}$', re.I)), finalize_and_send),
+                MessageHandler(filters.Regex(re.compile(f"^{re.escape(BTN_DONE)}$", re.I)), finalize_and_send),
                 CommandHandler("restart", restart),
             ],
         },
@@ -229,7 +220,6 @@ def create_app():
 
     app_telegram.add_handler(conv_handler)
 
-    # Flask integration
     @app.route("/webhook", methods=["POST"])
     def webhook():
         update = Update.de_json(request.get_json(force=True), app_telegram.bot)
@@ -247,5 +237,4 @@ if __name__ == "__main__":
     app_obj = create_app()
     import asyncio
     asyncio.run(app_obj.run_webhook())
-
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
