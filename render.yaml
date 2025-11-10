@@ -1,12 +1,15 @@
 services:
   - type: web
-    name: gatekeepers-bot
+    name: gatekeepersbot
     env: python
-    plan: free
+    plan: starter
+    region: ohio
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    startCommand: gunicorn gatekeepers_album_maker:app --bind 0.0.0.0:$PORT
     envVars:
       - key: BOT_TOKEN
-        sync: false
-      - key: PORT
-        value: 10000
+        value: "<YOUR_BOT_TOKEN>"
+      - key: OTHER_ENV_VAR
+        value: "<VALUE_IF_ANY>"
+    autoDeploy: true
+    healthCheckPath: /

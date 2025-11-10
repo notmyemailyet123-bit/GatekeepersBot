@@ -1,5 +1,5 @@
-# Telegram bot
-python-telegram-bot==20.3
+# Telegram bot with webhook support
+python-telegram-bot[webhooks]==20.3
 
 # Web framework
 Flask==2.3.3
