@@ -15,7 +15,7 @@ from telegram.ext import (
 FACE, PHOTOS, VIDEOS, NAME, ALIAS, COUNTRY, FAME, SOCIALS, DONE = range(9)
 user_data_store = {}
 
-# Split photos/videos evenly
+# Split media evenly across albums
 def split_albums(media_list):
     n = len(media_list)
     if n <= 10:
@@ -181,35 +181,40 @@ Top socials:
 ==============="""
 
     keyboard = [
-        [InlineKeyboardButton("Restart 🔁", callback_data="restart"),
-         InlineKeyboardButton("Exit 🚪", callback_data="exit")]
+        [InlineKeyboardButton("Restart 🔁", callback_data="restart")],
+        [InlineKeyboardButton("Exit 🚪", callback_data="exit")]
     ]
     await query.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(keyboard))
     return ConversationHandler.END
 
-# Restart or Exit
+# Restart
 async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.message.reply_text("🔁 Restarting process...\n\nPlease send the celebrity’s **face photo** to start again.")
-    user_data_store[query.from_user.id] = {
+    user_id = query.from_user.id
+    user_data_store[user_id] = {
         "face": None, "photos": [], "videos": [],
         "name": "", "alias": "", "country": "",
         "fame": "", "socials": {}
     }
+    await query.message.reply_text(
+        "🔁 Restarting process...\n\nPlease send the celebrity’s **face photo** to start again."
+    )
     return FACE
 
+# Exit
 async def exit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.message.reply_text("👋 Thanks for using Gatekeepers Album Maker!")
+    await query.message.reply_text("👋 Thanks for using Gatekeepers Album Maker! Have a great day!")
     return ConversationHandler.END
 
-# Main
+# Main entry
 def main():
     bot_token = os.getenv("BOT_TOKEN")
     app = ApplicationBuilder().token(bot_token).build()
 
+    # Main conversation
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler(["start", "restart"], start)],
         states={
@@ -229,14 +234,16 @@ def main():
             SOCIALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, socials)],
             DONE: [CallbackQueryHandler(finalize, pattern="^finalize$")]
         },
-        fallbacks=[
-            CommandHandler("restart", start),
-            CallbackQueryHandler(restart_callback, pattern="^restart$"),
-            CallbackQueryHandler(exit_callback, pattern="^exit$")
-        ]
+        fallbacks=[CommandHandler("restart", start)],
+        per_message=True
     )
 
     app.add_handler(conv_handler)
+
+    # Global handlers for after conversation ends
+    app.add_handler(CallbackQueryHandler(restart_callback, pattern="^restart$"))
+    app.add_handler(CallbackQueryHandler(exit_callback, pattern="^exit$"))
+
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 10000)),
