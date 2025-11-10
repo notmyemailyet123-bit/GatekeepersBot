@@ -1,7 +1,6 @@
 python-telegram-bot==20.3
 quart==0.18.0
-werkzeug==2.3.7
+hypercorn==0.18.0
 httpx==0.24.1
 python-dotenv==1.0.0
 aiofiles==23.2.1
-hypercorn==0.18.0

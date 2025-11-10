@@ -1,165 +1,166 @@
 import os
+import re
 import asyncio
-from telegram import Update, InputMediaPhoto, InputMediaVideo
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from quart import Quart
+import httpx
+from quart import Quart, request
+from dotenv import load_dotenv
+from telegram import Update, InputMediaPhoto
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from hypercorn.config import Config
+from hypercorn.asyncio import serve
 
-# ------------------------
-# Telegram Bot Logic
-# ------------------------
-user_data = {}
+load_dotenv()
 
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_data[chat_id] = {
-        "step": 0,
-        "face_image": None,
-        "images": [],
-        "videos": [],
-        "full_name": "",
-        "alias": "",
-        "country": "",
-        "fame": "",
-        "social_links": {}
-    }
-    await update.message.reply_text("Process restarted. Send a normal face picture of the celebrity to begin.")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await restart(update, context)
+# Initialize Telegram bot
+bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if chat_id not in user_data:
-        await restart(update, context)
-    data = user_data[chat_id]
-    step = data["step"]
-
-    if step == 0 and update.message.photo:
-        data["face_image"] = update.message.photo[-1].file_id
-        data["step"] += 1
-        await update.message.reply_text("Face image received. Send all images you want to post. Type 'done' when finished.")
-        return
-    elif step == 0:
-        await update.message.reply_text("Please send a face picture to begin.")
-        return
-
-    if step == 1:
-        if update.message.text and update.message.text.lower() == "done":
-            data["step"] += 1
-            await update.message.reply_text("All images saved. Send all videos and GIFs now. Type 'done' when finished.")
-        elif update.message.photo:
-            data["images"].append(update.message.photo[-1].file_id)
-        return
-
-    if step == 2:
-        if update.message.text and update.message.text.lower() == "done":
-            data["step"] += 1
-            await update.message.reply_text("All videos/GIFs saved. Send the celebrity's full name.")
-        elif update.message.video or update.message.animation:
-            file_id = update.message.video.file_id if update.message.video else update.message.animation.file_id
-            data["videos"].append(file_id)
-        return
-
-    if step == 3:
-        data["full_name"] = update.message.text
-        data["step"] += 1
-        await update.message.reply_text("Send the celebrity's alias/social media handles if any.")
-        return
-
-    if step == 4:
-        data["alias"] = update.message.text
-        data["step"] += 1
-        await update.message.reply_text("Send the celebrity's country of origin.")
-        return
-
-    if step == 5:
-        data["country"] = update.message.text
-        data["step"] += 1
-        await update.message.reply_text("Why is this person famous?")
-        return
-
-    if step == 6:
-        data["fame"] = update.message.text
-        data["step"] += 1
-        await update.message.reply_text("Send social media links with follower counts (one per line, e.g., 'URL 1.2M').")
-        return
-
-    if step == 7 and update.message.text:
-        for line in update.message.text.splitlines():
-            parts = line.split()
-            if not parts: continue
-            url, count = parts[0], " ".join(parts[1:]) if len(parts) > 1 else ""
-            if "youtube.com" in url.lower():
-                data["social_links"]["YouTube"] = {"count": count, "url": url}
-            elif "instagram.com" in url.lower():
-                data["social_links"]["Instagram"] = {"count": count, "url": url}
-            elif "tiktok.com" in url.lower():
-                data["social_links"]["TikTok"] = {"count": count, "url": url}
-        data["step"] += 1
-        await update.message.reply_text("All social info saved. Type 'done' when ready to receive album and summary.")
-        return
-
-    if step == 8 and update.message.text and update.message.text.lower() == "done":
-        summary = f"""
-^^^^^^^^^^^^^^^
-
-Name: {data['full_name']}
-Alias: {data['alias']}
-Country: {data['country']}
-Fame: {data['fame']}
-Top socials: 
-YouTube ({data['social_links'].get('YouTube', {}).get('count','')}) - {data['social_links'].get('YouTube', {}).get('url','')}
-Instagram ({data['social_links'].get('Instagram', {}).get('count','')}) - {data['social_links'].get('Instagram', {}).get('url','')}
-TikTok ({data['social_links'].get('TikTok', {}).get('count','')}) - {data['social_links'].get('TikTok', {}).get('url','')}
-
-===============
-"""
-        await update.message.reply_text(summary)
-
-        media_files = [data["face_image"]] + data["images"] + data["videos"]
-        chunk_size = 10
-        for i in range(0, len(media_files), chunk_size):
-            media_group = []
-            for file_id in media_files[i:i+chunk_size]:
-                if file_id in data["videos"]:
-                    media_group.append(InputMediaVideo(file_id))
-                else:
-                    media_group.append(InputMediaPhoto(file_id))
-            await context.bot.send_media_group(chat_id, media_group)
-        data["step"] += 1
-        return
-
-# ------------------------
-# Quart web server
-# ------------------------
+# Initialize Quart app
 app = Quart(__name__)
 
-@app.route("/")
-async def index():
-    return "Gatekeepers Telegram Bot is running!"
+# ------------------------- Helper Functions ----------------------------
 
-# ------------------------
-# Run bot + Quart together
-# ------------------------
+def extract_socials(text: str):
+    """
+    Extracts social media URLs and follower counts from the user's message.
+    Example input:
+        https://www.instagram.com/nicholasgalitzine 5.7M
+        https://youtube.com/@nicholasgalitzineofficial 118K
+        https://www.tiktok.com/@nicholasgalitzine 3.1M
+    """
+    socials = {}
+    pattern = r"(https?://[^\s]+)\s+([\d\.]+[KkMm]?)"
+    matches = re.findall(pattern, text)
+
+    for url, count in matches:
+        if "instagram" in url.lower():
+            socials["Instagram"] = (count, url)
+        elif "youtube" in url.lower():
+            socials["YouTube"] = (count, url)
+        elif "tiktok" in url.lower():
+            socials["TikTok"] = (count, url)
+
+    return socials
+
+
+def evenly_split_photos(photo_urls, group_count=3):
+    """
+    Evenly split the list of photos into N groups (albums) as balanced as possible.
+    Example: 26 photos → [8, 9, 9]
+    """
+    total = len(photo_urls)
+    base = total // group_count
+    remainder = total % group_count
+
+    sizes = [base + (1 if i < remainder else 0) for i in range(group_count)]
+
+    albums = []
+    idx = 0
+    for size in sizes:
+        albums.append(photo_urls[idx: idx + size])
+        idx += size
+    return albums
+
+
+async def generate_summary(name, socials):
+    """
+    Generate a formatted text summary for the celebrity/person.
+    """
+    instagram = socials.get("Instagram", ("x", ""))
+    youtube = socials.get("YouTube", ("x", ""))
+    tiktok = socials.get("TikTok", ("x", ""))
+
+    summary = (
+        f"^^^^^^^^^^^^^^^^\n\n"
+        f"Name: {name}\n"
+        f"Alias: {name.replace(' ', '')}, {name.lower()}\n"
+        f"Country: UK\n"
+        f"Fame: Actor\n"
+        f"Top socials:\n"
+        f"YouTube ({youtube[0]}) - {youtube[1]}\n"
+        f"Instagram ({instagram[0]}) - {instagram[1]}\n"
+        f"TikTok ({tiktok[0]}) - {tiktok[1]}\n\n"
+        f"===============\n"
+    )
+    return summary
+
+
+# ------------------------- Telegram Bot Logic ----------------------------
+
+@bot_app.message(filters.COMMAND & filters.Regex(r"^/start"))
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hey! Send me social media links and follower counts (one per line).")
+
+
+@bot_app.message(filters.TEXT & ~filters.COMMAND)
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    socials = extract_socials(text)
+    name = "Nicholas Galitzine"  # for example, you could add name parsing later
+
+    summary = await generate_summary(name, socials)
+    await update.message.reply_text(summary)
+
+    # Example placeholder photos (in a real version you’d get these dynamically)
+    photos = [
+        "https://picsum.photos/400/400?random=1",
+        "https://picsum.photos/400/400?random=2",
+        "https://picsum.photos/400/400?random=3",
+        "https://picsum.photos/400/400?random=4",
+        "https://picsum.photos/400/400?random=5",
+        "https://picsum.photos/400/400?random=6",
+        "https://picsum.photos/400/400?random=7",
+        "https://picsum.photos/400/400?random=8",
+        "https://picsum.photos/400/400?random=9"
+    ]
+
+    albums = evenly_split_photos(photos, 3)
+
+    for album in albums:
+        media_group = [InputMediaPhoto(url) for url in album]
+        await context.bot.send_media_group(chat_id=update.message.chat_id, media=media_group)
+
+
+# ------------------------- Quart Webhook ----------------------------
+
+@app.route("/", methods=["GET"])
+async def home():
+    return "Bot is running!", 200
+
+
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+async def telegram_webhook():
+    data = await request.get_json()
+    update = Update.de_json(data, bot_app.bot)
+    await bot_app.process_update(update)
+    return "OK", 200
+
+
+# ------------------------- Combined Async Runner ----------------------------
+
 async def start_bot():
-    token = os.environ["TELEGRAM_TOKEN"]
-    bot_app = ApplicationBuilder().token(token).build()
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("restart", restart))
-    bot_app.add_handler(MessageHandler(filters.ALL, handle_message))
-    print("Telegram bot is running...")
-    await bot_app.run_polling()
+    print("Starting Telegram bot...")
+    await bot_app.initialize()
+    await bot_app.start()
+    print("Telegram bot is live.")
+    await bot_app.updater.start_polling()
+    await bot_app.updater.wait_for_stop()
+    await bot_app.stop()
+    await bot_app.shutdown()
+
 
 async def start_web():
-    import hypercorn.asyncio
-    from hypercorn.config import Config
+    print("Starting Quart web server...")
     config = Config()
-    config.bind = [f"0.0.0.0:{os.environ.get('PORT', '10000')}"]
-    print("Quart web server is running...")
-    await hypercorn.asyncio.serve(app, config)
+    config.bind = ["0.0.0.0:10000"]
+    await serve(app, config)
+
 
 async def main():
     await asyncio.gather(start_bot(), start_web())
+
 
 if __name__ == "__main__":
     asyncio.run(main())
