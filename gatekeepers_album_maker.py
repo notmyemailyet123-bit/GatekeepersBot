@@ -1,232 +1,238 @@
 import os
 import asyncio
+from io import BytesIO
+from math import ceil
+from urllib.parse import urlparse
+
+from flask import Flask, request
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    InputMediaPhoto, InputMediaVideo
 )
 from telegram.ext import (
-    ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler,
-    ConversationHandler, CallbackQueryHandler, filters
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, ConversationHandler,
+    filters
 )
-from telegram.constants import ParseMode
-from telegram.helpers import escape_markdown
-from flask import Flask, request
-from dotenv import load_dotenv
 
-load_dotenv()
+# -------------------------
+# Configuration
+# -------------------------
+TOKEN = os.getenv("BOT_TOKEN")  # Your Telegram bot token
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., https://gatekeepersbot.onrender.com/
 
-TOKEN = os.getenv("BOT_TOKEN")
-URL = os.getenv("WEBHOOK_URL")  # e.g., https://gatekeepersbot.onrender.com/
-
-# Steps
+# Conversation states
 (
-    FACE, PICS, VIDEOS,
-    NAME, ALIAS, COUNTRY,
-    FAME, SOCIALS, DONE
+    FACE_PHOTO, CONTENT_IMAGES, CONTENT_VIDEOS, FULL_NAME,
+    ALIAS, COUNTRY, FAME, SOCIALS, CONFIRM
 ) = range(9)
 
-user_data_dict = {}
-
-# Flask app
+# Initialize Flask
 flask_app = Flask(__name__)
+user_data = {}  # store per-user data
 
-def split_albums(items, max_per_album=10):
-    """Split list into roughly equal albums."""
+# -------------------------
+# Helper functions
+# -------------------------
+def validate_social_link(url: str):
+    """Simple validation for social URLs"""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        if not parsed.netloc:
+            return False
+        return True
+    except Exception:
+        return False
+
+def split_into_albums(items, max_per_album=10):
+    """Split items into nearly even albums, max 10 per album"""
     n = len(items)
-    if n <= max_per_album:
-        return [items]
-    num_albums = (n + max_per_album - 1) // max_per_album
-    avg = n // num_albums
-    remainder = n % num_albums
-    albums = []
-    start = 0
-    for i in range(num_albums):
-        end = start + avg + (1 if i < remainder else 0)
-        albums.append(items[start:end])
-        start = end
-    return albums
+    if n == 0:
+        return []
+    num_albums = ceil(n / max_per_album)
+    per_album = ceil(n / num_albums)
+    return [items[i:i + per_album] for i in range(0, n, per_album)]
 
-# ---- Handlers ----
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_dict[update.effective_user.id] = {
-        "face": None, "pics": [], "videos": [],
-        "name": "", "alias": "", "country": "",
-        "fame": "", "socials": {}
-    }
-    await update.message.reply_text(
-        "Welcome to Gatekeepers Album Maker!\n"
-        "Step 1: Please send a **clear face photo** of the celebrity.",
-        parse_mode=ParseMode.MARKDOWN
+def format_summary(data):
+    """Format user data into your template"""
+    socials_text = ""
+    for platform, followers in data.get("socials", {}).items():
+        socials_text += f"{platform} ({followers}) - \n"
+    return (
+        "^^^^^^^^^^^^^^^\n\n"
+        f"Name: {data.get('full_name','-')}\n"
+        f"Alias: {data.get('alias','-')}\n"
+        f"Country: {data.get('country','-')}\n"
+        f"Fame: {data.get('fame','-')}\n"
+        f"Top socials:\n{socials_text}\n"
+        "===============\n"
     )
-    return FACE
 
-async def face_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    photo_file = await update.message.photo[-1].get_file()
-    path = f"temp_{user_id}_face.jpg"
-    await photo_file.download_to_drive(path)
-    user_data_dict[user_id]["face"] = path
-    keyboard = [[InlineKeyboardButton("Next", callback_data="next")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Face photo received.", reply_markup=reply_markup)
-    return PICS
-
-async def pics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    media_files = []
-    if update.message.photo:
-        for photo in update.message.photo:
-            file = await photo.get_file()
-            path = f"temp_{user_id}_pic_{len(user_data_dict[user_id]['pics'])}.jpg"
-            await file.download_to_drive(path)
-            user_data_dict[user_id]['pics'].append(path)
-    keyboard = [[InlineKeyboardButton("Next", callback_data="next")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Pictures saved. Press Next when done uploading more.", reply_markup=reply_markup)
-    return VIDEOS
-
-async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if update.message.video:
-        file = await update.message.video.get_file()
-        path = f"temp_{user_id}_video_{len(user_data_dict[user_id]['videos'])}.mp4"
-        await file.download_to_drive(path)
-        user_data_dict[user_id]['videos'].append(path)
-    elif update.message.animation:
-        file = await update.message.animation.get_file()
-        path = f"temp_{user_id}_video_{len(user_data_dict[user_id]['videos'])}.mp4"
-        await file.download_to_drive(path)
-        user_data_dict[user_id]['videos'].append(path)
-    keyboard = [[InlineKeyboardButton("Next", callback_data="next")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Videos saved. Press Next when done uploading more.", reply_markup=reply_markup)
-    return NAME
-
-async def name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_dict[update.effective_user.id]["name"] = update.message.text
-    await update.message.reply_text("Step 5: Send the celebrity's alias or social handles (if any).")
-    return ALIAS
-
-async def alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_dict[update.effective_user.id]["alias"] = update.message.text
-    await update.message.reply_text("Step 6: Send the celebrity's country of origin.")
-    return COUNTRY
-
-async def country(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_dict[update.effective_user.id]["country"] = update.message.text
-    await update.message.reply_text("Step 7: Why is this person famous?")
-    return FAME
-
-async def fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_dict[update.effective_user.id]["fame"] = update.message.text
-    await update.message.reply_text("Step 8: Send their social media links.")
-    return SOCIALS
-
-async def socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    # Simple validation: only accept URLs with https
-    links = update.message.text.split()
-    socials = {}
-    for link in links:
-        if "youtube.com" in link:
-            socials["YouTube"] = link
-        elif "instagram.com" in link:
-            socials["Instagram"] = link
-        elif "tiktok.com" in link:
-            socials["TikTok"] = link
-    user_data_dict[user_id]["socials"] = socials
-    keyboard = [[InlineKeyboardButton("Finish", callback_data="finish")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Press Finish when done.", reply_markup=reply_markup)
-    return DONE
-
-async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    data = user_data_dict[user_id]
-
-    # Assemble summary
-    summary = (
-        f"^^^^^^^^^^^^^^^\n\n"
-        f"Name: {escape_markdown(data['name'], version=2)}\n"
-        f"Alias: {escape_markdown(data['alias'], version=2)}\n"
-        f"Country: {escape_markdown(data['country'], version=2)}\n"
-        f"Fame: {escape_markdown(data['fame'], version=2)}\n"
-        f"Top socials:\n"
-    )
-    for platform, link in data['socials'].items():
-        summary += f"{platform} - {link}\n"
-    summary += "\n==============="
-
-    await query.message.reply_text(summary, parse_mode=ParseMode.MARKDOWN_V2)
-
-    # Prepare media albums
-    all_media = [data['face']] + data['pics'] + data['videos']
-    albums = split_albums(all_media, max_per_album=10)
-
-    for album in albums:
-        media_group = []
-        for file_path in album:
-            if file_path.endswith(".jpg"):
-                media_group.append(InputMediaPhoto(open(file_path, "rb")))
-            else:
-                media_group.append(InputMediaVideo(open(file_path, "rb")))
-        await query.message.reply_media_group(media_group)
-
-    return ConversationHandler.END
-
-async def next_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if context.user_data.get("step") == FACE:
-        await query.message.reply_text("Step 2: Send all the pictures you want to add.")
-        context.user_data["step"] = PICS
-        return PICS
-    elif context.user_data.get("step") == PICS:
-        await query.message.reply_text("Step 3: Send all the videos or GIFs you want to add.")
-        context.user_data["step"] = VIDEOS
-        return VIDEOS
-    elif context.user_data.get("step") == VIDEOS:
-        await query.message.reply_text("Step 4: Send the celebrity's full name.")
-        context.user_data["step"] = NAME
-        return NAME
-
-# ---- Flask route ----
+# -------------------------
+# Flask webhook route
+# -------------------------
 @flask_app.route("/", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), app.bot)
     asyncio.run(app.update_queue.put(update))
     return "OK"
 
-# ---- Main ----
-app = ApplicationBuilder().token(TOKEN).build()
+# -------------------------
+# Command Handlers
+# -------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data[user_id] = {
+        "face_photo": None,
+        "images": [],
+        "videos": [],
+        "full_name": None,
+        "alias": None,
+        "country": None,
+        "fame": None,
+        "socials": {}
+    }
+    await update.message.reply_text("Welcome to Gatekeepers Album Maker!\nSend a **normal face picture of the celebrity** to start.")
+    return FACE_PHOTO
 
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await start(update, context)
+
+# -------------------------
+# Step Handlers
+# -------------------------
+async def handle_face_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not update.message.photo:
+        await update.message.reply_text("Please send a valid photo.")
+        return FACE_PHOTO
+    bio = BytesIO()
+    await update.message.photo[-1].get_file().download_to_memory(out=bio)
+    bio.seek(0)
+    user_data[user_id]["face_photo"] = bio
+    await update.message.reply_text("Face photo saved! Now send all pictures you want to post. Send /done when finished.")
+    return CONTENT_IMAGES
+
+async def handle_content_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if update.message.text and update.message.text.lower() == "/done":
+        await update.message.reply_text(f"Saved {len(user_data[user_id]['images'])} images. Now send all videos/GIFs. Send /done when finished.")
+        return CONTENT_VIDEOS
+    elif update.message.photo:
+        bio = BytesIO()
+        await update.message.photo[-1].get_file().download_to_memory(out=bio)
+        bio.seek(0)
+        user_data[user_id]["images"].append(bio)
+        return CONTENT_IMAGES
+    else:
+        return CONTENT_IMAGES  # ignore non-photo messages
+
+async def handle_content_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if update.message.text and update.message.text.lower() == "/done":
+        await update.message.reply_text("Videos/GIFs saved. Send the celebrity's full name.")
+        return FULL_NAME
+    elif update.message.video or update.message.animation:
+        bio = BytesIO()
+        file = update.message.video or update.message.animation
+        await file.get_file().download_to_memory(out=bio)
+        bio.seek(0)
+        user_data[user_id]["videos"].append(bio)
+        return CONTENT_VIDEOS
+    else:
+        return CONTENT_VIDEOS  # ignore other messages
+
+async def handle_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data[user_id]["full_name"] = update.message.text
+    await update.message.reply_text("Send the celebrity's alias or social media handles (or 'None').")
+    return ALIAS
+
+async def handle_alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data[user_id]["alias"] = update.message.text
+    await update.message.reply_text("Send the celebrity's country of origin.")
+    return COUNTRY
+
+async def handle_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data[user_id]["country"] = update.message.text
+    await update.message.reply_text("Send why the celebrity is famous.")
+    return FAME
+
+async def handle_fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data[user_id]["fame"] = update.message.text
+    await update.message.reply_text("Send celebrity social links. Send /done when finished.")
+    return SOCIALS
+
+async def handle_socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    if text.lower() == "/done":
+        await update.message.reply_text("All information collected! Generating albums...")
+        return await finalize(update, context)
+    if validate_social_link(text):
+        platform = urlparse(text).netloc.split('.')[0].capitalize()
+        user_data[user_id]["socials"][platform] = "x"  # placeholder for followers
+    return SOCIALS
+
+# -------------------------
+# Finalize & send albums
+# -------------------------
+async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    data = user_data[user_id]
+
+    # Send summary
+    await update.message.reply_text(format_summary(data))
+
+    # Assemble albums
+    all_photos = [data["face_photo"]] + data["images"]
+    albums = split_into_albums(all_photos, max_per_album=10)
+    for album in albums:
+        media = [InputMediaPhoto(photo) for photo in album]
+        await context.bot.send_media_group(chat_id=update.effective_chat.id, media=media)
+
+    # Optionally send videos
+    videos = data["videos"]
+    video_albums = split_into_albums(videos, max_per_album=10)
+    for album in video_albums:
+        media = [InputMediaVideo(video) for video in album]
+        await context.bot.send_media_group(chat_id=update.effective_chat.id, media=media)
+
+    return ConversationHandler.END
+
+# -------------------------
+# Add Conversation Handler
+# -------------------------
 conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
+    entry_points=[CommandHandler("start", start), CommandHandler("restart", restart)],
     states={
-        FACE: [MessageHandler(filters.PHOTO, face_photo)],
-        PICS: [MessageHandler(filters.PHOTO, pics)],
-        VIDEOS: [MessageHandler(filters.VIDEO | filters.ANIMATION, videos)],
-        NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, name)],
-        ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, alias)],
-        COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, country)],
-        FAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, fame)],
-        SOCIALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, socials)],
-        DONE: [CallbackQueryHandler(finish, pattern="finish")],
+        FACE_PHOTO: [MessageHandler(filters.PHOTO, handle_face_photo)],
+        CONTENT_IMAGES: [MessageHandler(filters.PHOTO | filters.TEXT, handle_content_images)],
+        CONTENT_VIDEOS: [MessageHandler(filters.VIDEO | filters.ANIMATION | filters.TEXT, handle_content_videos)],
+        FULL_NAME: [MessageHandler(filters.TEXT, handle_full_name)],
+        ALIAS: [MessageHandler(filters.TEXT, handle_alias)],
+        COUNTRY: [MessageHandler(filters.TEXT, handle_country)],
+        FAME: [MessageHandler(filters.TEXT, handle_fame)],
+        SOCIALS: [MessageHandler(filters.TEXT, handle_socials)]
     },
-    fallbacks=[CommandHandler("restart", start)],
-    per_message=False
+    fallbacks=[CommandHandler("restart", restart)],
 )
 
+app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(conv_handler)
-app.add_handler(CallbackQueryHandler(next_step, pattern="next"))
 
-# Set webhook automatically
-async def set_hook():
-    await app.bot.set_webhook(URL)
-
-asyncio.run(set_hook())
+# -------------------------
+# Run Flask with webhook
+# -------------------------
+async def main():
+    await app.bot.set_webhook(WEBHOOK_URL)
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    asyncio.run(main())
