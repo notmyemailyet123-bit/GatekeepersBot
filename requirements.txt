@@ -3,3 +3,4 @@ python-telegram-bot==20.3
 gunicorn
 aiofiles
 requests
+python-dotenv
