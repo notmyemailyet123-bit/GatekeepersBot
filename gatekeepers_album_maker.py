@@ -1,6 +1,7 @@
 import os
 import re
 import math
+import asyncio
 import logging
 from quart import Quart, request
 from telegram import Update, InputMediaPhoto, InputMediaVideo
@@ -17,26 +18,26 @@ load_dotenv()
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("gatekeepers_album_maker")
 
 # Initialize Telegram bot
 TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")  # from Render environment variable
+WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")  # Set this in Render env vars
+PORT = int(os.getenv("PORT", 10000))
 
 bot_app = Application.builder().token(TOKEN).build()
 web_app = Quart(__name__)
 
-# In-memory storage
+# In-memory user session
 user_data = {}
 
 # ========== Helper Functions ==========
 
 def parse_socials(text):
-    """Parse social media URLs and follower counts."""
     socials = {"YouTube": ("", ""), "Instagram": ("", ""), "TikTok": ("", "")}
     lines = re.split(r"[,\\n]+", text)
     for line in lines:
-        match = re.search(r"(https?://\\S+)\s+([\\d\\.]+[MK]?)", line.strip())
+        match = re.search(r"(https?://\\S+)\\s+([\\d\\.]+[MK]?)", line.strip())
         if match:
             url, followers = match.groups()
             if "instagram" in url:
@@ -49,15 +50,13 @@ def parse_socials(text):
 
 
 def split_evenly(files, max_per_album=10):
-    """Evenly split files into albums of ≤10 items."""
     if len(files) <= max_per_album:
         return [files]
     total = len(files)
     num_albums = math.ceil(total / max_per_album)
     base_size = total // num_albums
     remainder = total % num_albums
-    albums = []
-    start = 0
+    albums, start = [], 0
     for i in range(num_albums):
         end = start + base_size + (1 if i < remainder else 0)
         albums.append(files[start:end])
@@ -66,7 +65,6 @@ def split_evenly(files, max_per_album=10):
 
 
 async def send_summary(update, data):
-    """Send final summary in the custom format."""
     socials = parse_socials(data.get("socials", ""))
     summary = (
         "^^^^^^^^^^^^^^^\n\n"
@@ -82,12 +80,16 @@ async def send_summary(update, data):
     )
     await update.message.reply_text(summary)
 
-
-# ========== Bot Step Logic ==========
+# ========== Bot Logic ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
     await update.message.reply_text("Step 1: Send a clear face photo of the celebrity.")
+
+
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
+    await update.message.reply_text("Restarted. Step 1: Send a clear face photo.")
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -95,15 +97,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = user_data.get(uid)
     if not data:
         return
-    step = data.get("step")
+    step = data["step"]
 
-    photo_file = update.message.photo[-1].file_id
+    photo_id = update.message.photo[-1].file_id
     if step == 1:
-        data["face_photo"] = photo_file
+        data["face_photo"] = photo_id
         data["step"] = 2
-        await update.message.reply_text("Got it! Now send all the pictures you want to post. Type 'done' when finished.")
+        await update.message.reply_text("Got it! Now send all other images. Type 'done' when finished.")
     elif step == 2:
-        data["photos"].append(photo_file)
+        data["photos"].append(photo_id)
     else:
         await update.message.reply_text("Not expecting photos right now.")
 
@@ -113,11 +115,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = user_data.get(uid)
     if not data:
         return
-    step = data.get("step")
-
-    file_id = update.message.video.file_id
+    step = data["step"]
     if step == 3:
-        data["videos"].append(file_id)
+        data["videos"].append(update.message.video.file_id)
     else:
         await update.message.reply_text("Not expecting videos right now.")
 
@@ -128,8 +128,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = user_data.get(uid)
     if not data:
         return
-
-    step = data.get("step")
+    step = data["step"]
 
     if text == "done":
         if step == 2:
@@ -146,48 +145,44 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 media = []
                 for fid in album:
                     if fid in data["videos"]:
-                        media.append(InputMediaVideo(media=fid))
+                        media.append(InputMediaVideo(fid))
                     else:
-                        media.append(InputMediaPhoto(media=fid))
+                        media.append(InputMediaPhoto(fid))
                 await update.message.reply_media_group(media)
             await update.message.reply_text("All done!")
         return
 
+    # Text input progression
     if step == 4:
         data["name"] = update.message.text.strip()
         data["step"] = 5
-        await update.message.reply_text("Step 5: Send the alias/social media handles.")
+        await update.message.reply_text("Step 5: Send aliases or handles.")
     elif step == 5:
         data["alias"] = update.message.text.strip()
         data["step"] = 6
-        await update.message.reply_text("Step 6: Send the country of origin.")
+        await update.message.reply_text("Step 6: Send country of origin.")
     elif step == 6:
         data["country"] = update.message.text.strip()
         data["step"] = 7
-        await update.message.reply_text("Step 7: Send why this person is famous.")
+        await update.message.reply_text("Step 7: Why is this person famous?")
     elif step == 7:
         data["fame"] = update.message.text.strip()
         data["step"] = 8
-        await update.message.reply_text("Step 8: Send the celebrity’s social media links and follower counts.")
+        await update.message.reply_text("Step 8: Send social links with follower counts.")
     elif step == 8:
         data["socials"] = update.message.text.strip()
         data["step"] = 9
-        await update.message.reply_text("Step 9: Type 'done' when you’re finished.")
+        await update.message.reply_text("Step 9: Type 'done' when finished.")
 
 
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
-    await update.message.reply_text("Restarted. Step 1: Send a clear face photo.")
-
-
-# ========== Handlers ==========
+# Register handlers
 bot_app.add_handler(CommandHandler("start", start))
 bot_app.add_handler(CommandHandler("restart", restart))
 bot_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 bot_app.add_handler(MessageHandler(filters.VIDEO, handle_video))
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-# ========== Quart Webhook Setup ==========
+# ========== Quart Webhook Routes ==========
 
 @web_app.post("/webhook")
 async def webhook():
@@ -199,15 +194,19 @@ async def webhook():
 
 @web_app.get("/")
 async def index():
-    return "Gatekeepers Album Maker is live!", 200
+    return "✅ Gatekeepers Album Maker is live!", 200
 
 
-async def main():
+# ========== Startup ==========
+
+async def init_bot():
+    """Initialize and start Telegram Application before Quart starts."""
+    await bot_app.initialize()
+    await bot_app.start()
     await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
     logger.info(f"Webhook set to {WEBHOOK_URL}/webhook")
 
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(main())
-    web_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    asyncio.get_event_loop().run_until_complete(init_bot())
+    web_app.run(host="0.0.0.0", port=PORT)
