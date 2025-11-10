@@ -34,7 +34,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = user_data[chat_id]
     step = data["step"]
 
-    # Face image
     if step == 0 and update.message.photo:
         data["face_image"] = update.message.photo[-1].file_id
         data["step"] += 1
@@ -44,7 +43,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please send a face picture to begin.")
         return
 
-    # Content images
     if step == 1:
         if update.message.text and update.message.text.lower() == "done":
             data["step"] += 1
@@ -53,7 +51,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["images"].append(update.message.photo[-1].file_id)
         return
 
-    # Videos/GIFs
     if step == 2:
         if update.message.text and update.message.text.lower() == "done":
             data["step"] += 1
@@ -63,35 +60,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["videos"].append(file_id)
         return
 
-    # Full name
     if step == 3:
         data["full_name"] = update.message.text
         data["step"] += 1
         await update.message.reply_text("Send the celebrity's alias/social media handles if any.")
         return
 
-    # Alias
     if step == 4:
         data["alias"] = update.message.text
         data["step"] += 1
         await update.message.reply_text("Send the celebrity's country of origin.")
         return
 
-    # Country
     if step == 5:
         data["country"] = update.message.text
         data["step"] += 1
         await update.message.reply_text("Why is this person famous?")
         return
 
-    # Fame
     if step == 6:
         data["fame"] = update.message.text
         data["step"] += 1
         await update.message.reply_text("Send social media links with follower counts (one per line, e.g., 'URL 1.2M').")
         return
 
-    # Social links
     if step == 7 and update.message.text:
         for line in update.message.text.splitlines():
             parts = line.split()
@@ -107,7 +99,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("All social info saved. Type 'done' when ready to receive album and summary.")
         return
 
-    # Done & send summary
     if step == 8 and update.message.text and update.message.text.lower() == "done":
         summary = f"""
 ^^^^^^^^^^^^^^^
@@ -148,7 +139,7 @@ async def index():
     return "Gatekeepers Telegram Bot is running!"
 
 # ------------------------
-# Run bot + Quart with Hypercorn
+# Run bot + Quart together
 # ------------------------
 async def start_bot():
     token = os.environ["TELEGRAM_TOKEN"]
@@ -159,13 +150,16 @@ async def start_bot():
     print("Telegram bot is running...")
     await bot_app.run_polling()
 
-if __name__ == "__main__":
+async def start_web():
     import hypercorn.asyncio
     from hypercorn.config import Config
-
-    port = int(os.environ.get("PORT", 10000))
     config = Config()
-    config.bind = [f"0.0.0.0:{port}"]
+    config.bind = [f"0.0.0.0:{os.environ.get('PORT', '10000')}"]
+    print("Quart web server is running...")
+    await hypercorn.asyncio.serve(app, config)
 
-    # Run both asynchronously
-    asyncio.run(asyncio.gather(start_bot(), hypercorn.asyncio.serve(app, config)))
+async def main():
+    await asyncio.gather(start_bot(), start_web())
+
+if __name__ == "__main__":
+    asyncio.run(main())
