@@ -1,207 +1,212 @@
 import os
-from flask import Flask, request
+import math
+import asyncio
 from telegram import Update, InputMediaPhoto, InputMediaVideo
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackContext
-from urllib.parse import urlparse
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from flask import Flask, request
 
-# Environment variables
-TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+# ===============================
+# STEP ENUMS
+# ===============================
+(
+    STEP_FACE,
+    STEP_IMAGES,
+    STEP_VIDEOS,
+    STEP_NAME,
+    STEP_ALIAS,
+    STEP_COUNTRY,
+    STEP_FAME,
+    STEP_SOCIALS,
+    STEP_CONFIRM,
+) = range(9)
 
-# Flask app for webhook
+# ===============================
+# FLASK APP
+# ===============================
 flask_app = Flask(__name__)
 
-# Store user sessions
-sessions = {}
+# ===============================
+# TELEGRAM BOT SETUP
+# ===============================
+TOKEN = os.getenv("BOT_TOKEN")
+application = ApplicationBuilder().token(TOKEN).build()
 
-# Steps
-STEPS = [
-    "face_photo",
-    "pics",
-    "videos",
-    "full_name",
-    "alias",
-    "country",
-    "fame",
-    "socials",
-    "done"
-]
+# ===============================
+# USER DATA HANDLING
+# ===============================
+users_data = {}
 
-# Helper: split items evenly into albums
-def split_evenly(items, max_per_album=10):
-    n = len(items)
-    num_albums = (n + max_per_album - 1) // max_per_album
-    base_size = n // num_albums
-    remainder = n % num_albums
+# ===============================
+# HELPER FUNCTIONS
+# ===============================
 
-    albums = []
-    start = 0
-    for i in range(num_albums):
-        end = start + base_size + (1 if i < remainder else 0)
-        albums.append(items[start:end])
-        start = end
-    return albums
+def split_evenly(lst, n):
+    """Split a list into n roughly equal parts."""
+    k, m = divmod(len(lst), n)
+    return [lst[i*k + min(i, m):(i+1)*k + min(i+1, m)] for i in range(n)]
 
-# Restart command
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    sessions[chat_id] = {
-        "step": 0,
-        "face_photo": None,
-        "pics": [],
-        "videos": [],
-        "full_name": "",
-        "alias": "",
-        "country": "",
-        "fame": "",
-        "socials": {}
-    }
-    await context.bot.send_message(chat_id=chat_id, text="Session restarted. Send the celebrity's face photo first.")
-
-# Process messages
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user = sessions.setdefault(chat_id, {
-        "step": 0,
-        "face_photo": None,
-        "pics": [],
-        "videos": [],
-        "full_name": "",
-        "alias": "",
-        "country": "",
-        "fame": "",
-        "socials": {}
-    })
-    step = user["step"]
-
-    # Step 0: face photo
-    if step == 0 and update.message.photo:
-        user["face_photo"] = update.message.photo[-1].file_id
-        user["step"] += 1
-        await context.bot.send_message(chat_id=chat_id, text="Face photo saved. Now send all other pictures. Send /next when done.")
+async def assemble_albums(chat_id, context: ContextTypes.DEFAULT_TYPE):
+    data = users_data.get(chat_id)
+    if not data:
         return
 
-    # Step 1: pictures
-    if step == 1:
-        if update.message.photo:
-            user["pics"].append(update.message.photo[-1].file_id)
-            return
-        elif update.message.text and update.message.text.lower() == "/next":
-            user["step"] += 1
-            await context.bot.send_message(chat_id=chat_id, text="Pictures saved. Now send all videos/gifs. Send /next when done.")
-            return
-        else:
-            return
-
-    # Step 2: videos/gifs
-    if step == 2:
-        if update.message.video or update.message.animation:
-            file_id = update.message.video.file_id if update.message.video else update.message.animation.file_id
-            user["videos"].append(file_id)
-            return
-        elif update.message.text and update.message.text.lower() == "/next":
-            user["step"] += 1
-            await context.bot.send_message(chat_id=chat_id, text="Videos saved. Send full name of the celebrity.")
-            return
-        else:
-            return
-
-    # Step 3: full name
-    if step == 3:
-        user["full_name"] = update.message.text
-        user["step"] += 1
-        await context.bot.send_message(chat_id=chat_id, text="Send alias/social media handles.")
-        return
-
-    # Step 4: alias
-    if step == 4:
-        user["alias"] = update.message.text
-        user["step"] += 1
-        await context.bot.send_message(chat_id=chat_id, text="Send country of origin.")
-        return
-
-    # Step 5: country
-    if step == 5:
-        user["country"] = update.message.text
-        user["step"] += 1
-        await context.bot.send_message(chat_id=chat_id, text="Send why the celebrity is famous.")
-        return
-
-    # Step 6: fame
-    if step == 6:
-        user["fame"] = update.message.text
-        user["step"] += 1
-        await context.bot.send_message(chat_id=chat_id, text="Send social media links (YouTube, Instagram, TikTok). Send /done when finished.")
-        return
-
-    # Step 7: socials
-    if step == 7:
-        if update.message.text and update.message.text.lower() == "/done":
-            user["step"] += 1
-        else:
-            text = update.message.text
-            if "youtube.com" in text:
-                user["socials"]["YouTube"] = text
-            elif "instagram.com" in text:
-                user["socials"]["Instagram"] = text
-            elif "tiktok.com" in text:
-                user["socials"]["TikTok"] = text
-            return
-
-    # Step 8: done -> output albums & summary
-    if step == 8:
-        await send_summary_and_albums(chat_id, user, context)
-        sessions.pop(chat_id)  # reset session
-        return
-
-# Send summary and albums
-async def send_summary_and_albums(chat_id, user, context):
-    # Format summary
-    summary = f"""^^^^^^^^^^^^^^^
-
-Name: {user['full_name']}
-Alias: {user['alias']}
-Country: {user['country']}
-Fame: {user['fame']}
-Top socials:
-YouTube - {user['socials'].get('YouTube','-')}
-Instagram - {user['socials'].get('Instagram','-')}
-TikTok - {user['socials'].get('TikTok','-')}
-
-==============="""
-    await context.bot.send_message(chat_id=chat_id, text=summary)
-
-    # Combine all media
-    all_media = [user["face_photo"]] + user["pics"] + user["videos"]
-    albums = split_evenly(all_media, max_per_album=10)
+    media = [data['face']] + data['images'] + data['videos']
+    total_files = len(media)
+    # Split into roughly equal albums, max 10 per album
+    num_albums = math.ceil(total_files / 10)
+    albums = split_evenly(media, num_albums)
 
     for album in albums:
-        media_group = []
-        for file_id in album:
-            if file_id in user["videos"]:
-                media_group.append(InputMediaVideo(file_id))
+        input_media = []
+        for item in album:
+            if item['type'] == 'photo':
+                input_media.append(InputMediaPhoto(item['file_id']))
             else:
-                media_group.append(InputMediaPhoto(file_id))
-        await context.bot.send_media_group(chat_id=chat_id, media=media_group)
+                input_media.append(InputMediaVideo(item['file_id']))
+        await context.bot.send_media_group(chat_id=chat_id, media=input_media)
 
-# Flask route
-@flask_app.route('/', methods=['POST'])
+async def send_summary(chat_id, context: ContextTypes.DEFAULT_TYPE):
+    data = users_data.get(chat_id)
+    if not data:
+        return
+    summary = f"""
+^^^^^^^^^^^^^^^
+
+Name: {data.get('name','-')}
+Alias: {data.get('alias','-')}
+Country: {data.get('country','-')}
+Fame: {data.get('fame','-')}
+Top socials:
+YouTube ({data.get('youtube','x')})
+Instagram ({data.get('instagram','x')})
+TikTok ({data.get('tiktok','x')})
+
+===============
+"""
+    await context.bot.send_message(chat_id=chat_id, text=summary)
+
+# ===============================
+# COMMANDS
+# ===============================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    users_data[chat_id] = {
+        'images': [],
+        'videos': [],
+    }
+    await update.message.reply_text("Send the celebrity's face photo first.")
+    return STEP_FACE
+
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await start(update, context)
+
+# ===============================
+# MESSAGE HANDLERS
+# ===============================
+async def handle_face(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    photo = update.message.photo[-1]  # best quality
+    users_data[chat_id]['face'] = {'type':'photo','file_id':photo.file_id}
+    await update.message.reply_text("Face received. Send the images you want to add. Send /next when done.")
+    return STEP_IMAGES
+
+async def handle_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if update.message.photo:
+        photo = update.message.photo[-1]
+        users_data[chat_id]['images'].append({'type':'photo','file_id':photo.file_id})
+    return STEP_IMAGES
+
+async def next_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Images saved. Now send videos or GIFs. Send /next when done.")
+    return STEP_VIDEOS
+
+async def handle_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if update.message.video:
+        users_data[chat_id]['videos'].append({'type':'video','file_id':update.message.video.file_id})
+    elif update.message.animation:
+        users_data[chat_id]['videos'].append({'type':'video','file_id':update.message.animation.file_id})
+    return STEP_VIDEOS
+
+async def next_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Videos saved. Send celebrity's full name.")
+    return STEP_NAME
+
+async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    users_data[chat_id]['name'] = update.message.text
+    await update.message.reply_text("Send alias/social media handles.")
+    return STEP_ALIAS
+
+async def handle_alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    users_data[chat_id]['alias'] = update.message.text
+    await update.message.reply_text("Send country of origin.")
+    return STEP_COUNTRY
+
+async def handle_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    users_data[chat_id]['country'] = update.message.text
+    await update.message.reply_text("Send why the person is famous.")
+    return STEP_FAME
+
+async def handle_fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    users_data[chat_id]['fame'] = update.message.text
+    await update.message.reply_text("Send social media links in format: YouTube Instagram TikTok")
+    return STEP_SOCIALS
+
+async def handle_socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    # Simple parser: split by spaces
+    links = update.message.text.split()
+    users_data[chat_id]['youtube'] = links[0] if len(links) > 0 else 'x'
+    users_data[chat_id]['instagram'] = links[1] if len(links) > 1 else 'x'
+    users_data[chat_id]['tiktok'] = links[2] if len(links) > 2 else 'x'
+    await update.message.reply_text("All done! Sending albums and summary...")
+    await send_summary(chat_id, context)
+    await assemble_albums(chat_id, context)
+    return ConversationHandler.END
+
+# ===============================
+# CONVERSATION HANDLER
+# ===============================
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        STEP_FACE: [MessageHandler(filters.PHOTO, handle_face)],
+        STEP_IMAGES: [
+            MessageHandler(filters.PHOTO, handle_images),
+            CommandHandler("next", next_images),
+        ],
+        STEP_VIDEOS: [
+            MessageHandler(filters.VIDEO | filters.ANIMATION, handle_videos),
+            CommandHandler("next", next_videos),
+        ],
+        STEP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name)],
+        STEP_ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_alias)],
+        STEP_COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_country)],
+        STEP_FAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_fame)],
+        STEP_SOCIALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_socials)],
+    },
+    fallbacks=[CommandHandler("restart", restart)],
+)
+
+application.add_handler(conv_handler)
+
+# ===============================
+# FLASK WEBHOOK
+# ===============================
+@flask_app.route("/", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    application.update_queue.put(update)
-    return 'OK'
+    data = request.get_json(force=True)
+    update = Update.de_json(data, application.bot)
+    asyncio.create_task(application.update_queue.put(update))
+    return "OK"
 
-# Set webhook
-async def set_webhook():
-    await application.bot.set_webhook(WEBHOOK_URL)
-
-# Main
-application = ApplicationBuilder().token(TOKEN).build()
-application.add_handler(CommandHandler("restart", restart))
-application.add_handler(MessageHandler(filters.ALL, message_handler))
-
+# ===============================
+# RUN FLASK
+# ===============================
 if __name__ == "__main__":
-    import asyncio
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(set_webhook())
-    flask_app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
