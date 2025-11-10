@@ -2,99 +2,118 @@ import os
 import logging
 import asyncio
 from flask import Flask, request
-from telegram import Update, InputMediaPhoto
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# ----------------- CONFIG -----------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")  # Telegram bot token
-BOT_URL = os.environ.get("BOT_URL")      # e.g., https://gatekeepersbot.onrender.com
-PORT = int(os.environ.get("PORT", 10000))
-
-# ----------------- LOGGING -----------------
+# ----------------------
+# Logging setup
+# ----------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ----------------- FLASK APP -----------------
+# ----------------------
+# Flask app
+# ----------------------
 app = Flask(__name__)
 
-# ----------------- TELEGRAM BOT -----------------
-telegram_app = Application.builder().token(BOT_TOKEN).build()
+# ----------------------
+# Telegram bot setup
+# ----------------------
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable not set")
 
-# ----------------- ALBUMS -----------------
-# Each album is a list of image URLs or local paths
-albums = {
-    "album1": [
-        "https://example.com/face1.jpg",  # Only show for first album
-        "https://example.com/pic1.jpg",
-        "https://example.com/pic2.jpg"
-    ],
-    "album2": [
-        "https://example.com/pic3.jpg",
-        "https://example.com/pic4.jpg"
-    ],
-    "album3": [
-        "https://example.com/pic5.jpg",
-        "https://example.com/pic6.jpg"
-    ]
-}
+telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# ----------------- TELEGRAM HANDLERS -----------------
+# Keep track of albums per user
+user_albums = {}  # user_id -> list of albums
+first_face_sent = set()  # user_ids who have sent the first face picture
+
+# ----------------------
+# Bot commands
+# ----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command handler"""
     await update.message.reply_text(
-        "Hello! Send /album <name> to get an album."
+        "Hello! Send me images and I'll make albums for you. The first face picture will appear only in your first album."
     )
 
-async def album(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send an album by name. Only first face picture appears for first album."""
-    if not context.args:
-        await update.message.reply_text("Usage: /album <album_name>")
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Send photos to add to your albums. Albums are collections of images sent together."
+    )
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    photos = update.message.photo
+
+    if not photos:
         return
 
-    album_name = context.args[0].lower()
-    if album_name not in albums:
-        await update.message.reply_text("Album not found.")
-        return
+    # Get highest resolution photo
+    photo_file = photos[-1].file_id
 
-    pics = albums[album_name]
-    media_group = []
+    # Initialize album for user
+    if user_id not in user_albums:
+        user_albums[user_id] = []
 
-    # Show first face pic only for the first album
-    if album_name == "album1" and pics:
-        media_group.append(InputMediaPhoto(pics[0]))
+    album_index = len(user_albums[user_id])
 
-    # Add the rest of the album
-    start_index = 1 if album_name == "album1" else 0
-    for pic in pics[start_index:]:
-        media_group.append(InputMediaPhoto(pic))
+    # For first album only, include the "first face" if not sent yet
+    if album_index == 0 and user_id not in first_face_sent:
+        # Here you can attach your first face image, e.g., a URL or file_id
+        first_face_image = "first_face_file_id_or_url"
+        user_albums[user_id].append([first_face_image])
 
-    if media_group:
-        await update.message.reply_media_group(media_group)
+        first_face_sent.add(user_id)
+
+    # Append current photo to the current album
+    if album_index < len(user_albums[user_id]):
+        user_albums[user_id][album_index].append(photo_file)
     else:
-        await update.message.reply_text("No images to show.")
+        user_albums[user_id].append([photo_file])
 
-# ----------------- REGISTER HANDLERS -----------------
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CommandHandler("album", album))
+    await update.message.reply_text(f"Added photo to album #{album_index + 1}!")
 
-# ----------------- WEBHOOK ROUTE -----------------
+# ----------------------
+# Flask webhook route
+# ----------------------
 @app.route("/webhook", methods=["POST"])
-def webhook():
-    """Receive updates from Telegram and push them to the bot's queue"""
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    asyncio.run(telegram_app.update_queue.put(update))
-    return "OK", 200
+async def webhook():
+    data = await request.get_json()
+    update = Update.de_json(data, telegram_app.bot)
+    await telegram_app.update_queue.put(update)
+    return "ok"
 
-# ----------------- SET WEBHOOK -----------------
+# ----------------------
+# Set webhook for Telegram
+# ----------------------
 async def set_webhook():
+    BOT_URL = os.getenv("BOT_URL")
+    if not BOT_URL:
+        raise RuntimeError("BOT_URL environment variable not set")
+
     webhook_url = f"{BOT_URL}/webhook"
     await telegram_app.bot.set_webhook(webhook_url)
     logger.info(f"Webhook set to {webhook_url}")
 
-# ----------------- START -----------------
+# ----------------------
+# Add handlers
+# ----------------------
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CommandHandler("help", help_command))
+telegram_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+# ----------------------
+# Main
+# ----------------------
 if __name__ == "__main__":
+    port = int(os.getenv("PORT", "10000"))
+
+    # Start webhook setup before running Flask
     asyncio.run(set_webhook())
-    app.run(host="0.0.0.0", port=PORT)
+
+    # Run Flask
+    app.run(host="0.0.0.0", port=port)
