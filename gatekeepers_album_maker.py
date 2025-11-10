@@ -1,6 +1,8 @@
 import os
+import asyncio
 from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from quart import Quart
 
 # Store user data in memory
 user_data = {}
@@ -49,8 +51,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("All images saved. Send all videos and GIFs now. Type 'done' when finished.")
         elif update.message.photo:
             data["images"].append(update.message.photo[-1].file_id)
-        else:
-            pass  # Ignore non-photo messages
 
     # Step 3: Videos and GIFs
     elif step == 2:
@@ -60,8 +60,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif update.message.video or update.message.animation:
             file_id = update.message.video.file_id if update.message.video else update.message.animation.file_id
             data["videos"].append(file_id)
-        else:
-            pass  # Ignore other messages
 
     # Step 4: Full name
     elif step == 3:
@@ -146,17 +144,29 @@ TikTok ({data['social_links'].get('TikTok', {}).get('count','')}) - {data['socia
         else:
             await update.message.reply_text("Type 'done' when you are ready to finish and get the summary and albums.")
 
-# Main function
+# Quart web server
+app = Quart(__name__)
+
+@app.route("/")
+async def index():
+    return "Gatekeepers Telegram Bot is running!"
+
+# Start Telegram bot in the background
+async def start_bot():
+    token = os.getenv("TELEGRAM_TOKEN")
+    bot_app = ApplicationBuilder().token(token).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("restart", restart))
+    bot_app.add_handler(MessageHandler(filters.ALL, handle_message))
+    print("Telegram bot is running...")
+    await bot_app.run_polling()
+
+# Run both Quart and Telegram bot
 def main():
-    token = os.getenv("TELEGRAM_TOKEN")  # Set your bot token in Render's environment variables
-    app = ApplicationBuilder().token(token).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("restart", restart))
-    app.add_handler(MessageHandler(filters.ALL, handle_message))
-
-    print("Bot is running...")
-    app.run_polling()
+    port = int(os.environ.get("PORT", 10000))
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_bot())
+    app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     main()
