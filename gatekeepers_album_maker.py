@@ -1,170 +1,110 @@
-import os
-import logging
 import asyncio
-from io import BytesIO
-from fpdf import FPDF
+import logging
 from flask import Flask, request
-from telegram import Update, InputFile
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from fpdf import FPDF
+from PIL import Image
+import io
+import os
+
+# ----- Logging -----
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
-
-# -----------------------------
-# CONFIG
-# -----------------------------
-TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-PORT = int(os.getenv("PORT", "10000"))
-MAX_PHOTOS = 20  # Limit per album
-
-app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# -----------------------------
-# TELEGRAM APP
-# -----------------------------
-application = Application.builder().token(TOKEN).build()
-_initialized = False
+# ----- Flask app -----
+app = Flask(__name__)
+app.bot_initialized = False  # ensure bot initializes only once
 
-# -----------------------------
-# USER SESSIONS
-# -----------------------------
-user_sessions = {}  # {user_id: {"photos": [(photo_bytes, caption)]}}
-
-
-# -----------------------------
-# HELPERS
-# -----------------------------
+# ----- Telegram bot async setup -----
 async def initialize_app():
-    global _initialized
-    if not _initialized:
-        await application.initialize()
-        await application.start()
-        logger.info("Telegram bot initialized and started.")
-        _initialized = True
+    bot_token = os.environ.get('BOT_TOKEN')  # put your token in environment variables
+    if not bot_token:
+        raise ValueError("BOT_TOKEN environment variable not set")
 
+    app.telegram_app = ApplicationBuilder().token(bot_token).build()
 
-def ensure_event_loop():
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop
+    # Command handler: /start
+    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("Welcome! Send me images and I'll make a PDF album.")
 
+    # Message handler: receive images
+    async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        photos = update.message.photo
+        if not photos:
+            await update.message.reply_text("No photo found!")
+            return
 
-def create_pdf_album(photos_with_captions):
-    pdf = FPDF()
-    for img_bytes, caption in photos_with_captions:
-        pdf.add_page()
-        # Save image temporarily
-        img_file = BytesIO(img_bytes)
-        pdf.image(img_file, x=10, y=10, w=180)
-        if caption:
-            pdf.set_y(200)
-            pdf.set_font("Arial", size=12)
-            pdf.multi_cell(0, 10, caption)
-    output = BytesIO()
-    pdf.output(output)
-    output.seek(0)
-    return output
+        # Take the highest quality image
+        photo_file = await photos[-1].get_file()
+        photo_bytes = io.BytesIO()
+        await photo_file.download_to_memory(out=photo_bytes)
+        photo_bytes.seek(0)
 
+        # Store photo in user session
+        user_id = update.message.from_user.id
+        if 'images' not in context.user_data:
+            context.user_data['images'] = []
+        context.user_data['images'].append(photo_bytes)
 
-# -----------------------------
-# HANDLERS
-# -----------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_sessions[update.effective_user.id] = {"photos": []}
-    await update.message.reply_text(
-        "Welcome to Gatekeepers Album Maker!\nSend me photos to add to your album. "
-        "Send /create_album when ready."
-    )
+        await update.message.reply_text(f"Image added! You have {len(context.user_data['images'])} images.")
 
+    # Command handler: /generate
+    async def generate_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        images = context.user_data.get('images', [])
+        if not images:
+            await update.message.reply_text("No images to generate PDF!")
+            return
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in user_sessions:
-        user_sessions[user_id] = {"photos": []}
+        pdf = FPDF()
+        for img_bytes in images:
+            img_bytes.seek(0)
+            img = Image.open(img_bytes)
+            img_path = f"/tmp/{user_id}.png"
+            img.save(img_path)
+            pdf.add_page()
+            pdf.image(img_path, x=10, y=10, w=180)
+            os.remove(img_path)
 
-    if len(user_sessions[user_id]["photos"]) >= MAX_PHOTOS:
-        await update.message.reply_text(
-            f"You've reached the maximum of {MAX_PHOTOS} photos per album."
-        )
-        return
+        pdf_bytes = io.BytesIO()
+        pdf.output(pdf_bytes)
+        pdf_bytes.seek(0)
 
-    photo_file = await update.message.photo[-1].get_file()
-    photo_bytes = await photo_file.download_as_bytearray()
-    caption = update.message.caption or ""
-    user_sessions[user_id]["photos"].append((photo_bytes, caption))
+        await update.message.reply_document(pdf_bytes, filename="album.pdf")
+        context.user_data['images'] = []  # reset after sending
 
-    await update.message.reply_text(f"Photo added! Total: {len(user_sessions[user_id]['photos'])}")
+    # Add handlers
+    app.telegram_app.add_handler(CommandHandler('start', start))
+    app.telegram_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.telegram_app.add_handler(CommandHandler('generate', generate_pdf))
 
+    # Start bot
+    await app.telegram_app.initialize()
+    await app.telegram_app.start()
+    logger.info("Telegram bot initialized and started.")
 
-async def create_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in user_sessions or not user_sessions[user_id]["photos"]:
-        await update.message.reply_text("No photos found. Please send some first!")
-        return
-
-    album_pdf = create_pdf_album(user_sessions[user_id]["photos"])
-    album_pdf_file = InputFile(album_pdf, filename="album.pdf")
-    await update.message.reply_document(album_pdf_file)
-    await update.message.reply_text("Album created and sent! ✅")
-
-    # Reset session
-    user_sessions[user_id]["photos"] = []
-
-
-# -----------------------------
-# REGISTER HANDLERS
-# -----------------------------
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("create_album", create_album))
-application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-
-
-# -----------------------------
-# FLASK INTEGRATION
-# -----------------------------
-@app.before_first_request
+# ----- Flask hooks -----
+@app.before_request
 def setup_bot_once():
-    loop = ensure_event_loop()
-    loop.run_until_complete(initialize_app())
+    if not app.bot_initialized:
+        asyncio.run(initialize_app())
+        app.bot_initialized = True
 
-
-@app.route("/", methods=["GET"])
-def home():
-    return "Gatekeepers Bot is live and running!", 200
-
-
-@app.route("/webhook", methods=["POST"])
+# ----- Webhook endpoint -----
+@app.route('/webhook', methods=['POST'])
 def webhook():
-    loop = ensure_event_loop()
-    try:
-        update_data = request.get_json(force=True)
-        update = Update.de_json(update_data, application.bot)
-        loop.create_task(application.process_update(update))
-        return "OK", 200
-    except Exception as e:
-        logger.exception("Error processing webhook: %s", e)
-        return "Internal Server Error", 500
+    update = request.get_json(force=True)
+    asyncio.run(app.telegram_app.update_queue.put(Update.de_json(update, app.telegram_app.bot)))
+    return "OK", 200
 
+# ----- Simple test route -----
+@app.route('/', methods=['GET'])
+def index():
+    return "Gatekeepers Bot is running!", 200
 
-# -----------------------------
-# MAIN
-# -----------------------------
-if __name__ == "__main__":
-    loop = ensure_event_loop()
-    loop.run_until_complete(initialize_app())
-
-    render_url = os.getenv("RENDER_EXTERNAL_URL")
-    if render_url:
-        webhook_url = f"{render_url}/webhook"
-        loop.run_until_complete(application.bot.set_webhook(webhook_url))
-        logger.info(f"Webhook set to {webhook_url}")
-
-    app.run(host="0.0.0.0", port=PORT)
+# ----- Run Flask -----
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
