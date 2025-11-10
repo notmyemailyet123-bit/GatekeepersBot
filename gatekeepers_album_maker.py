@@ -34,10 +34,12 @@ user_data = {}
 # ========== Helper Functions ==========
 
 def parse_socials(text):
+    """Parse social media links and follower counts."""
     socials = {"YouTube": ("", ""), "Instagram": ("", ""), "TikTok": ("", "")}
-    lines = re.split(r"[,\\n]+", text.strip())
+    lines = re.split(r"[,\n]+", text.strip())
+
     for line in lines:
-        match = re.search(r"(https?://\S+)\s+([\d\.]+[MK]?)", line.strip(), re.IGNORECASE)
+        match = re.search(r"(https?://\S+)\s+([\d.,]+[MK]?)", line.strip(), re.IGNORECASE)
         if match:
             url, followers = match.groups()
             url = url.strip()
