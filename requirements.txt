@@ -1,14 +1,11 @@
-# Telegram bot framework
+# Telegram bot
 python-telegram-bot==20.3
 
-# Web server to receive Telegram updates
-Flask==3.0.3
+# Web framework
+Flask==2.3.3
 
-# For async handling (used internally by PTB)
-asgiref==3.8.1
+# Environment variables
+python-dotenv==1.0.0
 
-# Render or general production environment tools
+# WSGI server for deployment
 gunicorn==23.0.0
-
-# Used implicitly by Telegram for HTTP requests
-httpx==0.27.0
