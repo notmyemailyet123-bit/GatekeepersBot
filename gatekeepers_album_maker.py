@@ -14,7 +14,7 @@ from telegram.ext import (
 # ============ CONFIG ============
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 PORT = int(os.environ.get("PORT", "10000"))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")  # your Render URL + /webhook
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")  # Your Render URL + /webhook
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -211,23 +211,28 @@ conv_handler = ConversationHandler(
     fallbacks=[CommandHandler("restart", restart)],
 )
 
-
-# ============ APP CREATION ============
+# ============ BOT INITIALIZATION ============
 application = Application.builder().token(BOT_TOKEN).build()
 application.add_handler(conv_handler)
 application.add_handler(CommandHandler("restart", restart))
+
+_bot_initialized = False  # guard flag
+
+
+@app.before_request
+def setup_bot_once():
+    """Initialize the Telegram bot once, since Flask 3.0 removed before_first_request."""
+    global _bot_initialized
+    if not _bot_initialized:
+        asyncio.get_event_loop().run_until_complete(initialize_app())
+        _bot_initialized = True
 
 
 async def initialize_app():
     if not application._initialized:
         await application.initialize()
         await application.start()
-        logger.info("Bot initialized and started.")
-
-
-@app.before_first_request
-def setup_bot():
-    asyncio.get_event_loop().run_until_complete(initialize_app())
+        logger.info("Telegram bot initialized and started.")
 
 
 @app.route("/webhook", methods=["POST"])
