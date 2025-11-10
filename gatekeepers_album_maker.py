@@ -6,7 +6,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 # Environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 10000))
-WEBHOOK_URL = f"https://your-app.onrender.com/{BOT_TOKEN}"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., https://your-app.onrender.com/webhook
 
 # States for ConversationHandler
 NORMAL_FACE, CONTENT_PHOTOS, SOCIAL_LINKS = range(3)
@@ -15,7 +15,6 @@ NORMAL_FACE, CONTENT_PHOTOS, SOCIAL_LINKS = range(3)
 user_data_store = {}
 
 # ----- Handlers -----
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user_data_store[user_id] = {"normal_face": None, "content_photos": [], "social_links": {}}
@@ -61,7 +60,6 @@ async def receive_social_links(update: Update, context: ContextTypes.DEFAULT_TYP
     
     if text.lower() == "done":
         data = user_data_store[user_id]
-        # Build social media text
         social_text = ""
         for platform, link in data["social_links"].items():
             social_text += f"{platform}: {link}\n"
@@ -74,7 +72,6 @@ async def receive_social_links(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return ConversationHandler.END
     
-    # Detect social media platform from URL
     platform = detect_social_platform(text)
     if platform:
         user_data_store[user_id]["social_links"][platform] = text
@@ -94,7 +91,6 @@ def detect_social_platform(url: str) -> str:
     elif "tiktok.com" in url:
         return "TikTok"
     else:
-        # Return domain name as platform
         match = re.search(r"https?://(?:www\.)?([^/]+)", url)
         if match:
             return match.group(1)
@@ -105,12 +101,8 @@ conv_handler = ConversationHandler(
     entry_points=[CommandHandler("start", start)],
     states={
         NORMAL_FACE: [MessageHandler(filters.PHOTO, receive_normal_face)],
-        CONTENT_PHOTOS: [
-            MessageHandler(filters.PHOTO | filters.TEXT & (~filters.COMMAND), receive_content_photos)
-        ],
-        SOCIAL_LINKS: [
-            MessageHandler(filters.TEXT & (~filters.COMMAND), receive_social_links)
-        ]
+        CONTENT_PHOTOS: [MessageHandler(filters.PHOTO | filters.TEXT & (~filters.COMMAND), receive_content_photos)],
+        SOCIAL_LINKS: [MessageHandler(filters.TEXT & (~filters.COMMAND), receive_social_links)]
     },
     fallbacks=[]
 )
