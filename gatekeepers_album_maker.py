@@ -1,205 +1,200 @@
 import os
 import re
 from telegram import Update, InputMediaPhoto, InputMediaVideo
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
-# User sessions storage
-user_sessions = {}
+# ---- Bot states ----
+FACE, PHOTOS, VIDEOS, NAME, ALIAS, COUNTRY, FAME, SOCIALS, DONE = range(9)
 
-STEPS = [
-    "face_photo", "pictures", "videos_gifs", "full_name",
-    "alias", "country", "fame", "socials", "done"
-]
+# ---- Temporary storage per user ----
+user_data_store = {}
 
-SOCIAL_PATTERNS = {
-    "youtube": r"(?:https?://)?(?:www\.)?youtube\.com/.*",
-    "instagram": r"(?:https?://)?(?:www\.)?instagram\.com/.*",
-    "tiktok": r"(?:https?://)?(?:www\.)?tiktok\.com/.*"
-}
+# ---- Helper functions ----
+def split_albums(media_list, face_photo):
+    """Split list into Telegram albums (~10 per album), starting with face photo."""
+    albums = []
+    total = len(media_list)
+    if total == 0:
+        return [[face_photo]]
+    chunk_size = max(1, total // ((total // 10) + 1))
+    chunks = [media_list[i:i+chunk_size] for i in range(0, total, chunk_size)]
+    for chunk in chunks:
+        albums.append([face_photo] + chunk)
+    return albums
 
-# Start/restart command
+def parse_social_link(link):
+    """Identify social media site and follower count if in the link."""
+    social_sites = ["youtube", "instagram", "tiktok"]
+    site = None
+    followers = None
+    for s in social_sites:
+        if s in link.lower():
+            site = s.capitalize()
+            break
+    # Look for a follower count in parentheses at end of link
+    match = re.search(r'\((\d+)\)$', link)
+    if match:
+        followers = match.group(1)
+        link = re.sub(r'\(\d+\)$', '', link).strip()
+    return site, link, followers
+
+# ---- Handlers ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user_sessions[user_id] = {
-        "step": 0,
-        "face_photo": None,
-        "pictures": [],
-        "videos_gifs": [],
-        "full_name": "",
+    user_data_store[user_id] = {
+        "face": None,
+        "photos": [],
+        "videos": [],
+        "name": "",
         "alias": "",
         "country": "",
         "fame": "",
         "socials": {}
     }
-    await update.message.reply_text("Welcome to Gatekeepers Album Maker! Send celebrity's normal face photo to start.")
+    await update.message.reply_text("Send a normal face picture of the celebrity.")
+    return FACE
 
-# Handle messages
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def face(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in user_sessions:
-        await start(update, context)
-        return
+    if update.message.photo:
+        file = await update.message.photo[-1].get_file()
+        user_data_store[user_id]["face"] = file.file_id
+        await update.message.reply_text("Now send all pictures you want to post. Send 'Done' when finished.")
+        return PHOTOS
+    else:
+        await update.message.reply_text("Please send a photo of the celebrity's face.")
+        return FACE
 
-    session = user_sessions[user_id]
-    step = STEPS[session["step"]]
-
-    # Step 1: Face photo
-    if step == "face_photo" and update.message.photo:
-        session["face_photo"] = update.message.photo[-1].file_id
-        session["step"] += 1
-        await update.message.reply_text("Face photo saved. Now send pictures to include in the album. Send 'Done' when finished.")
-        return
-
-    # Step 2: Pictures
-    if step == "pictures":
-        if update.message.text and update.message.text.lower() == "done":
-            session["step"] += 1
-            await update.message.reply_text("Pictures saved. Now send videos and GIFs. Send 'Done' when finished.")
-            return
-        elif update.message.photo:
-            session["pictures"].append(update.message.photo[-1].file_id)
-            return  # stay quiet while receiving
-        else:
-            return
-
-    # Step 3: Videos/GIFs
-    if step == "videos_gifs":
-        if update.message.text and update.message.text.lower() == "done":
-            session["step"] += 1
-            await update.message.reply_text("Videos/GIFs saved. Send celebrity's full name.")
-            return
-        elif update.message.video or update.message.animation:
-            file_id = update.message.video.file_id if update.message.video else update.message.animation.file_id
-            session["videos_gifs"].append(file_id)
-            return
-        else:
-            return
-
-    # Step 4: Full name
-    if step == "full_name" and update.message.text:
-        session["full_name"] = update.message.text.strip()
-        session["step"] += 1
-        await update.message.reply_text("Send celebrity's alias/social media handles (or '-' if none).")
-        return
-
-    # Step 5: Alias
-    if step == "alias" and update.message.text:
-        session["alias"] = update.message.text.strip()
-        session["step"] += 1
-        await update.message.reply_text("Send celebrity's country of origin.")
-        return
-
-    # Step 6: Country
-    if step == "country" and update.message.text:
-        session["country"] = update.message.text.strip()
-        session["step"] += 1
-        await update.message.reply_text("Send why the celebrity is famous.")
-        return
-
-    # Step 7: Fame
-    if step == "fame" and update.message.text:
-        session["fame"] = update.message.text.strip()
-        session["step"] += 1
-        await update.message.reply_text(
-            "Send celebrity's social media links (YouTube, Instagram, TikTok) one at a time. Send 'Done' when finished."
-        )
-        return
-
-    # Step 8: Socials
-    if step == "socials" and update.message.text:
-        text = update.message.text.strip()
-        if text.lower() == "done":
-            session["step"] += 1
-            await generate_summary(update, context)
-            return
-
-        if text == "-":
-            await update.message.reply_text("Skipped.")
-            return
-
-        # Extract follower number if provided in parentheses
-        follower_match = re.search(r"\((\d+)\)$", text)
-        followers = None
-        if follower_match:
-            followers = follower_match.group(1)
-            text = text[:follower_match.start()].strip()
-
-        # Detect platform automatically
-        platform_name = None
-        for name, pattern in SOCIAL_PATTERNS.items():
-            if re.match(pattern, text, re.IGNORECASE):
-                platform_name = name.capitalize()
-                break
-        if not platform_name:
-            domain_match = re.search(r"https?://(?:www\.)?([^/]+)", text)
-            if domain_match:
-                platform_name = domain_match.group(1).split('.')[0].capitalize()
-            else:
-                platform_name = "Other"
-
-        session["socials"][platform_name] = {"link": text, "followers": followers or "x"}
-        await update.message.reply_text(f"{platform_name} link saved.")
-        return
-
-# Generate summary and albums
-async def generate_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    session = user_sessions[user_id]
+    text = update.message.text
+    if text and text.lower() == "done":
+        await update.message.reply_text("Photos saved. Now send all videos and GIFs you want to add. Send 'Done' when finished.")
+        return VIDEOS
+    elif update.message.photo:
+        file = await update.message.photo[-1].get_file()
+        user_data_store[user_id]["photos"].append(file.file_id)
+    return PHOTOS
 
-    summary = f"""^^^^^^^^^^^^^^^
+async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    if text and text.lower() == "done":
+        await update.message.reply_text("Videos saved. Send the celebrity's full name.")
+        return NAME
+    elif update.message.video or update.message.animation:
+        file_id = update.message.video.file_id if update.message.video else update.message.animation.file_id
+        user_data_store[user_id]["videos"].append(file_id)
+    return VIDEOS
 
-Name: {session['full_name']}
-Alias: {session['alias']}
-Country: {session['country']}
-Fame: {session['fame']}
-Top socials:"""
+async def name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data_store[user_id]["name"] = update.message.text
+    await update.message.reply_text("Send the celebrity's alias/social media handles (or '-' if none).")
+    return ALIAS
 
-    for platform, info in session["socials"].items():
-        if info["link"] == "-":
-            continue
-        summary += f"\n{platform} ({info['followers']}) - {info['link']}"
+async def alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data_store[user_id]["alias"] = update.message.text
+    await update.message.reply_text("Send the celebrity's country of origin.")
+    return COUNTRY
 
+async def country(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data_store[user_id]["country"] = update.message.text
+    await update.message.reply_text("Send why the celebrity is famous.")
+    return FAME
+
+async def fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data_store[user_id]["fame"] = update.message.text
+    await update.message.reply_text(
+        "Send celebrity's social media links (YouTube, Instagram, TikTok) one at a time. Send 'Done' when finished."
+    )
+    return SOCIALS
+
+async def socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    if text.lower() == "done":
+        await update.message.reply_text("All done! Compiling album...")
+        return await compile_album(update, context)
+    else:
+        site, link, followers = parse_social_link(text)
+        if site:
+            user_data_store[user_id]["socials"][site] = (link, followers)
+        return SOCIALS
+
+async def compile_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    data = user_data_store[user_id]
+    face = data["face"]
+    photos = data["photos"]
+    videos = data["videos"]
+
+    # Prepare albums
+    albums = []
+    media_list = photos + videos
+    albums = split_albums(media_list, face)
+
+    # Send albums
+    for album in albums:
+        media_group = []
+        for f in album:
+            if f in photos or f == face:
+                media_group.append(InputMediaPhoto(f))
+            elif f in videos:
+                media_group.append(InputMediaVideo(f))
+        await update.message.reply_media_group(media_group)
+
+    # Prepare summary
+    summary = f"^^^^^^^^^^^^^^^\n\nName: {data['name']}\nAlias: {data['alias']}\nCountry: {data['country']}\nFame: {data['fame']}\nTop socials:"
+    for site, (link, followers) in data["socials"].items():
+        count = f"({followers})" if followers else ""
+        summary += f"\n{site} {count} - {link}"
     summary += "\n\n==============="
     await update.message.reply_text(summary)
 
-    # Send albums (face photo first in each)
-    all_files = [session["face_photo"]] + session["pictures"] + session["videos_gifs"]
-    max_per_album = 10
+    return ConversationHandler.END
 
-    # Split into chunks evenly
-    chunks = []
-    n = len(all_files)
-    if n <= max_per_album:
-        chunks = [all_files]
-    else:
-        chunk_size = n // ((n + max_per_album - 1) // max_per_album)
-        chunks = [all_files[i:i+chunk_size] for i in range(0, n, chunk_size)]
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await start(update, context)
 
-    for chunk in chunks:
-        media_group = []
-        for file_id in chunk:
-            # Assume video if in videos_gifs, else photo
-            if file_id in session["videos_gifs"]:
-                media_group.append(InputMediaVideo(media=file_id))
-            else:
-                media_group.append(InputMediaPhoto(media=file_id))
-        await context.bot.send_media_group(chat_id=update.effective_chat.id, media=media_group)
+# ---- Setup bot ----
+app = ApplicationBuilder().token("YOUR_BOT_TOKEN_HERE").build()
 
-    await update.message.reply_text("Albums sent. You can /restart anytime to create another.")
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler('start', start)],
+    states={
+        FACE: [MessageHandler(filters.PHOTO, face)],
+        PHOTOS: [MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, photos)],
+        VIDEOS: [MessageHandler(filters.VIDEO | filters.ANIMATION | (filters.TEXT & ~filters.COMMAND), videos)],
+        NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, name)],
+        ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, alias)],
+        COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, country)],
+        FAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, fame)],
+        SOCIALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, socials)],
+    },
+    fallbacks=[CommandHandler('restart', restart)]
+)
 
-# Main
-def main():
-    TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not TOKEN:
-        raise ValueError("No TELEGRAM_BOT_TOKEN found in environment variables.")
+app.add_handler(conv_handler)
 
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("restart", start))
-    app.add_handler(MessageHandler(filters.ALL, handle_message))
+# ---- Dummy server for Render ----
+from flask import Flask as FApp
+from threading import Thread
 
-    print("Bot is running...")
-    app.run_polling()
+dummy_server = FApp(__name__)
 
-if __name__ == "__main__":
-    main()
+@dummy_server.route("/")
+def home():
+    return "Bot is running!"
+
+def run_dummy():
+    port = int(os.environ.get("PORT", 10000))
+    dummy_server.run(host="0.0.0.0", port=port)
+
+Thread(target=run_dummy).start()
+
+# ---- Start bot ----
+app.run_polling()
