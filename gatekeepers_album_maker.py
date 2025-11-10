@@ -1,17 +1,18 @@
 import os
 import re
 from math import ceil
+from urllib.parse import urlparse
 from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters,
     ContextTypes, ConversationHandler
 )
 
-# Conversation steps
+# Conversation states
 FACE, PHOTOS, VIDEOS, NAME, ALIAS, COUNTRY, FAME, SOCIALS, DONE = range(9)
 user_data_store = {}
 
-# Split albums evenly if >10 items
+# Helper to split media into evenly sized albums
 def split_albums(media_list):
     n = len(media_list)
     if n <= 10:
@@ -27,7 +28,7 @@ def split_albums(media_list):
         start = end
     return albums
 
-# Start or restart bot
+# /start or /restart
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data_store[user_id] = {
@@ -48,7 +49,7 @@ async def face_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Please send a valid face photo.")
     return FACE
 
-# Step 2: Other photos
+# Step 2: Additional photos
 async def photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if update.message.photo:
@@ -59,7 +60,7 @@ async def photos_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Photos saved. Now send **videos or GIFs**. Send /done when finished.")
     return VIDEOS
 
-# Step 3: Videos
+# Step 3: Videos or GIFs
 async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if update.message.video:
@@ -72,60 +73,71 @@ async def videos_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Videos saved. Now send the celebrity’s **full name**.")
     return NAME
 
-# Step 4: Name
+# Step 4–7: Text info
 async def name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data_store[update.effective_user.id]["name"] = update.message.text
     await update.message.reply_text("Send the celebrity’s **aliases or handles** (comma-separated).")
     return ALIAS
 
-# Step 5: Alias
 async def alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data_store[update.effective_user.id]["alias"] = update.message.text
     await update.message.reply_text("Send the celebrity’s **country of origin**.")
     return COUNTRY
 
-# Step 6: Country
 async def country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data_store[update.effective_user.id]["country"] = update.message.text
     await update.message.reply_text("What is the celebrity famous for?")
     return FAME
 
-# Step 7: Fame
 async def fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data_store[update.effective_user.id]["fame"] = update.message.text
     await update.message.reply_text(
         "Now send **social media links** with follower counts.\n\n"
-        "Example:\nhttps://www.instagram.com/nicholasgalitzine 5.7M, "
-        "https://youtube.com/@nicholasgalitzineofficial 118K, "
-        "https://www.tiktok.com/@nicholasgalitzine 3.1M"
+        "Example:\n"
+        "https://www.instagram.com/example 5.7M,\n"
+        "https://youtube.com/@example 118K,\n"
+        "https://www.tiktok.com/@example 3.1M,\n"
+        "https://twitter.com/example 420K"
     )
     return SOCIALS
 
-# Step 8: Social links + follower parsing
+# Step 8: Parse ANY social site
 async def socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
-    socials = {"YouTube": ("", ""), "Instagram": ("", ""), "TikTok": ("", "")}
 
-    # Split by comma
-    for entry in text.split(','):
+    socials_dict = {}
+
+    # Split input by commas or newlines
+    entries = re.split(r'[,\n]', text)
+    for entry in entries:
         entry = entry.strip()
-        # Regex to match follower count (like 5.7M or 118K)
-        match = re.search(r'([\d\.]+[MK]?)', entry)
-        followers = match.group(1) if match else "x"
+        if not entry:
+            continue
 
-        if "instagram.com" in entry:
-            socials["Instagram"] = (entry.split()[0], followers)
-        elif "youtube.com" in entry:
-            socials["YouTube"] = (entry.split()[0], followers)
-        elif "tiktok.com" in entry:
-            socials["TikTok"] = (entry.split()[0], followers)
+        parts = entry.split()
+        if len(parts) >= 2:
+            link = parts[0].strip()
+            followers = parts[1].strip()
+        else:
+            link = parts[0].strip()
+            followers = "x"
 
-    user_data_store[user_id]["socials"] = socials
-    await update.message.reply_text("All info saved. Send /done to generate albums and summary.")
+        # Extract domain name for labeling
+        try:
+            parsed = urlparse(link)
+            domain = parsed.netloc.lower()
+            platform = domain.replace("www.", "").split(".")[0].capitalize()
+        except Exception:
+            platform = "Unknown"
+
+        socials_dict[platform] = (link, followers)
+
+    user_data_store[user_id]["socials"] = socials_dict
+    await update.message.reply_text("Socials saved. Send /done to generate albums and summary.")
     return DONE
 
-# Step 9: Generate albums and summary
+# Step 9: Final output + albums
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     data = user_data_store[user_id]
@@ -133,6 +145,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     all_media = [data["face"]] + data["photos"] + data["videos"]
     albums = split_albums(all_media)
 
+    # Send albums evenly split
     for album in albums:
         media_group = []
         for fid in album:
@@ -142,53 +155,58 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 media_group.append(InputMediaVideo(fid))
         await update.message.reply_media_group(media_group)
 
-    s = f"""^^^^^^^^^^^^^^^
+    # Format dynamic socials
+    socials_text = ""
+    for platform, (link, followers) in data["socials"].items():
+        socials_text += f"{platform} ({followers}) - {link}\n"
+
+    # Summary message
+    summary = f"""^^^^^^^^^^^^^^^
 
 Name: {data['name']}
 Alias: {data['alias']}
 Country: {data['country']}
 Fame: {data['fame']}
 Top socials:
-YouTube ({data['socials']['YouTube'][1]}) - {data['socials']['YouTube'][0]}
-Instagram ({data['socials']['Instagram'][1]}) - {data['socials']['Instagram'][0]}
-TikTok ({data['socials']['TikTok'][1]}) - {data['socials']['TikTok'][0]}
-
+{socials_text}
 ==============="""
-    await update.message.reply_text(s)
+    await update.message.reply_text(summary)
     return ConversationHandler.END
 
 # Restart
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await start(update, context)
 
-# Main function
+# Main bot setup
 def main():
     bot_token = os.getenv("BOT_TOKEN")
     app = ApplicationBuilder().token(bot_token).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler(['start', 'restart'], start)],
+        entry_points=[CommandHandler(["start", "restart"], start)],
         states={
             FACE: [MessageHandler(filters.PHOTO, face_photo)],
             PHOTOS: [
                 MessageHandler(filters.PHOTO, photos),
-                CommandHandler('done', photos_done)
+                CommandHandler("done", photos_done)
             ],
             VIDEOS: [
                 MessageHandler(filters.VIDEO | filters.ANIMATION, videos),
-                CommandHandler('done', videos_done)
+                CommandHandler("done", videos_done)
             ],
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, name)],
             ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, alias)],
             COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, country)],
             FAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, fame)],
             SOCIALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, socials)],
-            DONE: [CommandHandler('done', done)]
+            DONE: [CommandHandler("done", done)]
         },
-        fallbacks=[CommandHandler('restart', restart)]
+        fallbacks=[CommandHandler("restart", restart)]
     )
 
     app.add_handler(conv_handler)
+
+    # Webhook setup for Render
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 10000)),
