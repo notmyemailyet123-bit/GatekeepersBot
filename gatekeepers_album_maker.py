@@ -1,154 +1,207 @@
 import os
-import re
 import logging
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-    ConversationHandler,
-)
+from telegram import Update, InputMediaPhoto
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
-# ----- Logging -----
+# -----------------------------
+# Logging
+# -----------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ----- Environment variables -----
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-PORT = int(os.getenv("PORT", 10000))
-WEBHOOK_URL = f"https://gatekeepersbot.onrender.com/{BOT_TOKEN}"
+# -----------------------------
+# States for ConversationHandler
+# -----------------------------
+STEP_FACE, STEP_PHOTOS, STEP_VIDEOS, STEP_NAME, STEP_ALIAS, STEP_COUNTRY, STEP_FAME, STEP_SOCIALS, STEP_DONE = range(9)
 
-# ----- States for ConversationHandler -----
-NORMAL_FACE, CONTENT_PHOTOS, SOCIAL_LINKS = range(3)
+# -----------------------------
+# Helper Functions
+# -----------------------------
+def split_into_albums(items, max_per_album=10):
+    """Split a list into multiple lists with roughly even number of items."""
+    if not items:
+        return []
+    total = len(items)
+    num_albums = (total + max_per_album - 1) // max_per_album  # ceil division
+    base_size = total // num_albums
+    remainder = total % num_albums
+    albums = []
+    index = 0
+    for i in range(num_albums):
+        size = base_size + (1 if i < remainder else 0)
+        albums.append(items[index:index + size])
+        index += size
+    return albums
 
-# Temporary storage
-user_data_store = {}
+def format_output(user_data):
+    """Return the formatted output template"""
+    return f"""^^^^^^^^^^^^^^^
 
-# Ensure photos directory exists
-os.makedirs("photos", exist_ok=True)
+Name: {user_data.get('name', '-')}
+Alias: {user_data.get('alias', '-')}
+Country: {user_data.get('country', '-')}
+Fame: {user_data.get('fame', '-')}
 
-# ----- Handlers -----
+Top socials:
+YouTube ({user_data.get('youtube_followers', '-')}) - {user_data.get('youtube', '-')}
+Instagram ({user_data.get('instagram_followers', '-')}) - {user_data.get('instagram', '-')}
+TikTok ({user_data.get('tiktok_followers', '-')}) - {user_data.get('tiktok', '-')}
 
+===============
+"""
+
+# -----------------------------
+# Handlers
+# -----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user_data_store[user_id] = {"normal_face": None, "content_photos": [], "social_links": {}}
-    logger.info(f"User {user_id} started a conversation")
-    await update.message.reply_text("Welcome! Send the celebrity's normal face photo to start.")
-    return NORMAL_FACE
+    """Start / restart"""
+    context.user_data.clear()
+    context.user_data['photos'] = []
+    context.user_data['videos'] = []
+    await update.message.reply_text("Welcome! Step 1: Send a normal face picture of the celebrity.")
+    return STEP_FACE
 
-
-async def receive_normal_face(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
+async def face_picture(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 1: Save the face photo"""
     if not update.message.photo:
-        await update.message.reply_text("Please send a photo to continue.")
-        return NORMAL_FACE
+        await update.message.reply_text("Please send a photo (not text).")
+        return STEP_FACE
+    file = await update.message.photo[-1].get_file()
+    path = f"temp_face_{update.effective_user.id}.jpg"
+    await file.download_to_drive(path)
+    context.user_data['face'] = path
+    await update.message.reply_text("Face photo received! Step 2: Send all other pictures. Send /next when done.")
+    return STEP_PHOTOS
 
-    photo = await update.message.photo[-1].get_file()
-    path = f"photos/{photo.file_id}.jpg"
-    await photo.download_to_drive(path)
-
-    user_data_store[user_id]["normal_face"] = path
-    logger.info(f"User {user_id} sent normal face photo: {path}")
-    await update.message.reply_text(
-        "Normal face received! Now send the celebrity's content photos one at a time. Send 'Done' when finished."
-    )
-    return CONTENT_PHOTOS
-
-
-async def receive_content_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    text = update.message.text
-
-    if text and text.lower() == "done":
-        await update.message.reply_text(
-            "Great! Now send the celebrity's social media links (YouTube, Instagram, TikTok, or any other) one at a time. Send 'Done' when finished."
-        )
-        logger.info(f"User {user_id} finished sending content photos")
-        return SOCIAL_LINKS
-
+async def photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 2: Save additional photos"""
+    if update.message.text == "/next":
+        await update.message.reply_text(f"Received {len(context.user_data['photos'])} photos. Step 3: Send all videos and gifs. Send /next when done.")
+        return STEP_VIDEOS
     if update.message.photo:
-        photo = await update.message.photo[-1].get_file()
-        path = f"photos/{photo.file_id}.jpg"
-        await photo.download_to_drive(path)
-        user_data_store[user_id]["content_photos"].append(path)
-        logger.info(f"User {user_id} sent content photo: {path}")
-        await update.message.reply_text("Photo saved. Send another or 'Done' if finished.")
-        return CONTENT_PHOTOS
+        file = await update.message.photo[-1].get_file()
+        path = f"photo_{len(context.user_data['photos'])}_{update.effective_user.id}.jpg"
+        await file.download_to_drive(path)
+        context.user_data['photos'].append(path)
+    return STEP_PHOTOS
 
-    await update.message.reply_text("Please send a photo or 'Done'.")
-    return CONTENT_PHOTOS
+async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 3: Save videos/gifs"""
+    if update.message.text == "/next":
+        await update.message.reply_text("Step 4: Send the celebrity's full name.")
+        return STEP_NAME
+    if update.message.video or update.message.animation:
+        file = update.message.video or update.message.animation
+        file_obj = await file.get_file()
+        path = f"video_{len(context.user_data['videos'])}_{update.effective_user.id}.mp4"
+        await file_obj.download_to_drive(path)
+        context.user_data['videos'].append(path)
+    return STEP_VIDEOS
 
+async def name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 4: Save full name"""
+    context.user_data['name'] = update.message.text
+    await update.message.reply_text("Step 5: Send the celebrity's alias/social media handles (or type '-' if none).")
+    return STEP_ALIAS
 
-async def receive_social_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    text = update.message.text
+async def alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 5: Save alias"""
+    context.user_data['alias'] = update.message.text
+    await update.message.reply_text("Step 6: Send the celebrity's country of origin.")
+    return STEP_COUNTRY
 
-    if text.lower() == "done":
-        data = user_data_store[user_id]
-        social_text = "\n".join(f"{platform}: {link}" for platform, link in data["social_links"].items())
-        await update.message.reply_text(
-            f"All done! Here is a summary:\n"
-            f"Normal face: {data['normal_face']}\n"
-            f"Content photos: {len(data['content_photos'])}\n"
-            f"Social media links:\n{social_text or 'None'}"
-        )
-        logger.info(f"User {user_id} finished sending social links")
-        return ConversationHandler.END
+async def country(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 6: Save country"""
+    context.user_data['country'] = update.message.text
+    await update.message.reply_text("Step 7: Send why the person is famous.")
+    return STEP_FAME
 
-    platform = detect_social_platform(text)
-    if platform:
-        user_data_store[user_id]["social_links"][platform] = text
-        logger.info(f"User {user_id} added social link: {platform} -> {text}")
-        await update.message.reply_text(f"{platform} link saved. Send another or 'Done'.")
-    else:
-        await update.message.reply_text("Link not recognized. Send a valid URL or 'Done'.")
-        logger.warning(f"User {user_id} sent unrecognized link: {text}")
+async def fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 7: Save fame reason"""
+    context.user_data['fame'] = update.message.text
+    await update.message.reply_text("Step 8: Send social links (YouTube, Instagram, TikTok). Separate by commas. Type '-' if none.")
+    return STEP_SOCIALS
 
-    return SOCIAL_LINKS
+async def socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 8: Save socials"""
+    text = update.message.text.split(",")
+    context.user_data['youtube'] = text[0].strip() if len(text) > 0 else '-'
+    context.user_data['instagram'] = text[1].strip() if len(text) > 1 else '-'
+    context.user_data['tiktok'] = text[2].strip() if len(text) > 2 else '-'
 
-# ----- Utility -----
-def detect_social_platform(url: str) -> str:
-    url = url.lower()
-    if "instagram.com" in url:
-        return "Instagram"
-    elif "youtube.com" in url or "youtu.be" in url:
-        return "YouTube"
-    elif "tiktok.com" in url:
-        return "TikTok"
-    else:
-        match = re.search(r"https?://(?:www\.)?([^/]+)", url)
-        if match:
-            return match.group(1)
-    return None
+    # For now, placeholder follower counts
+    context.user_data['youtube_followers'] = 'x'
+    context.user_data['instagram_followers'] = 'x'
+    context.user_data['tiktok_followers'] = 'x'
 
-# ----- ConversationHandler -----
+    await update.message.reply_text("All info received. Step 9: Type /done when you are ready to assemble the album.")
+    return STEP_DONE
+
+async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Step 9 & 10: Assemble album and send"""
+    user_data = context.user_data
+    media = [user_data['face']] + user_data.get('photos', [])
+
+    albums = split_into_albums(media, 10)
+
+    # Send summary first
+    await update.message.reply_text(format_output(user_data))
+
+    # Send albums
+    for album in albums:
+        media_group = [InputMediaPhoto(open(photo, "rb")) for photo in album]
+        await update.message.reply_media_group(media_group)
+
+    await update.message.reply_text("Album creation complete! You can /restart anytime to make another album.")
+    return ConversationHandler.END
+
+# -----------------------------
+# Conversation Handler
+# -----------------------------
 conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
+    entry_points=[CommandHandler('start', start)],
     states={
-        NORMAL_FACE: [MessageHandler(filters.PHOTO, receive_normal_face)],
-        CONTENT_PHOTOS: [
-            MessageHandler(filters.PHOTO | (filters.TEXT & (~filters.COMMAND)), receive_content_photos)
+        STEP_FACE: [MessageHandler(filters.PHOTO, face_picture)],
+        STEP_PHOTOS: [
+            MessageHandler(filters.PHOTO, photos),
+            CommandHandler('next', photos)
         ],
-        SOCIAL_LINKS: [
-            MessageHandler(filters.TEXT & (~filters.COMMAND), receive_social_links)
+        STEP_VIDEOS: [
+            MessageHandler(filters.VIDEO | filters.ANIMATION, videos),
+            CommandHandler('next', videos)
         ],
+        STEP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, name)],
+        STEP_ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, alias)],
+        STEP_COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, country)],
+        STEP_FAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, fame)],
+        STEP_SOCIALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, socials)],
+        STEP_DONE: [CommandHandler('done', done)]
     },
-    fallbacks=[],
+    fallbacks=[CommandHandler('restart', start)]
 )
 
-# ----- Application -----
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-app.add_handler(conv_handler)
+# -----------------------------
+# Application
+# -----------------------------
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    logger.error("BOT_TOKEN not set in environment variables!")
+    exit(1)
 
-# ----- Run Webhook -----
-logger.info(f"Starting bot with webhook: {WEBHOOK_URL}")
-app.run_webhook(
+application = Application.builder().token(BOT_TOKEN).build()
+application.add_handler(conv_handler)
+
+PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = f"https://gatekeepersbot.onrender.com/"
+
+logger.info(f"Starting Gatekeepers Album Maker on webhook {WEBHOOK_URL}")
+
+application.run_webhook(
     listen="0.0.0.0",
     port=PORT,
-    webhook_url=WEBHOOK_URL,
+    url_path="",
+    webhook_url=WEBHOOK_URL
 )
