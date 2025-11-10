@@ -1,60 +1,39 @@
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import os
 import re
+from telegram import Update, InputMediaPhoto, InputMediaVideo
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# Logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
-)
-
-# Global storage for user sessions
+# User sessions storage
 user_sessions = {}
 
-# Steps
 STEPS = [
-    "face_photo",
-    "content_photos",
-    "content_videos",
-    "full_name",
-    "alias",
-    "country",
-    "fame",
-    "socials",
-    "confirmation",
-    "finished",
+    "face_photo", "pictures", "videos_gifs", "full_name",
+    "alias", "country", "fame", "socials", "done"
 ]
 
 SOCIAL_PATTERNS = {
-    "YouTube": r"(?:https?://)?(?:www\.)?youtube\.com/.*",
-    "Instagram": r"(?:https?://)?(?:www\.)?instagram\.com/.*",
-    "TikTok": r"(?:https?://)?(?:www\.)?tiktok\.com/.*"
+    "youtube": r"(?:https?://)?(?:www\.)?youtube\.com/.*",
+    "instagram": r"(?:https?://)?(?:www\.)?instagram\.com/.*",
+    "tiktok": r"(?:https?://)?(?:www\.)?tiktok\.com/.*"
 }
 
+# Start/restart command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_sessions[user_id] = {
         "step": 0,
         "face_photo": None,
-        "content_photos": [],
-        "content_videos": [],
+        "pictures": [],
+        "videos_gifs": [],
         "full_name": "",
         "alias": "",
         "country": "",
         "fame": "",
-        "socials": {},
+        "socials": {}
     }
-    await update.message.reply_text("Welcome! Please send a normal face picture of the celebrity to start.")
+    await update.message.reply_text("Welcome to Gatekeepers Album Maker! Send celebrity's normal face photo to start.")
 
-
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in user_sessions:
-        del user_sessions[user_id]
-    await start(update, context)
-
-
+# Handle messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -65,76 +44,104 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = STEPS[session["step"]]
 
     # Step 1: Face photo
-    if step == "face_photo":
-        if update.message.photo:
-            session["face_photo"] = update.message.photo[-1].file_id
-            session["step"] += 1
-            await update.message.reply_text("Face photo saved! Now send all content photos. When done, send 'Done'.")
-        else:
-            await update.message.reply_text("Please send a photo of the celebrity's face.")
-
-    # Step 2: Content photos
-    elif step == "content_photos":
-        if update.message.photo:
-            session["content_photos"].append(update.message.photo[-1].file_id)
-        elif update.message.text and update.message.text.lower() == "done":
-            session["step"] += 1
-            await update.message.reply_text("Photos saved! Now send all videos and gifs. Send 'Done' when finished.")
-        else:
-            await update.message.reply_text("Send photos or 'Done' when finished.")
-
-    # Step 3: Videos & GIFs
-    elif step == "content_videos":
-        if update.message.video or update.message.animation:
-            file_id = update.message.video.file_id if update.message.video else update.message.animation.file_id
-            session["content_videos"].append(file_id)
-        elif update.message.text and update.message.text.lower() == "done":
-            session["step"] += 1
-            await update.message.reply_text("Videos saved! Now send the celebrity's full name.")
-        else:
-            await update.message.reply_text("Send videos/gifs or 'Done' when finished.")
-
-    # Step 4: Full name
-    elif step == "full_name":
-        session["full_name"] = update.message.text
+    if step == "face_photo" and update.message.photo:
+        session["face_photo"] = update.message.photo[-1].file_id
         session["step"] += 1
-        await update.message.reply_text("Got it! Now send the celebrity's alias or social media handles if any.")
+        await update.message.reply_text("Face photo saved. Now send pictures to include in the album. Send 'Done' when finished.")
+        return
 
-    # Step 5: Alias
-    elif step == "alias":
-        session["alias"] = update.message.text
-        session["step"] += 1
-        await update.message.reply_text("Next, send the celebrity's country of origin.")
-
-    # Step 6: Country
-    elif step == "country":
-        session["country"] = update.message.text
-        session["step"] += 1
-        await update.message.reply_text("Why is this person famous?")
-
-    # Step 7: Fame
-    elif step == "fame":
-        session["fame"] = update.message.text
-        session["step"] += 1
-        await update.message.reply_text("Send celebrity's social media links (YouTube, Instagram, TikTok). Send 'Done' when finished.")
-
-    # Step 8: Socials
-    elif step == "socials":
+    # Step 2: Pictures
+    if step == "pictures":
         if update.message.text and update.message.text.lower() == "done":
             session["step"] += 1
-            await generate_summary(update, context)
+            await update.message.reply_text("Pictures saved. Now send videos and GIFs. Send 'Done' when finished.")
+            return
+        elif update.message.photo:
+            session["pictures"].append(update.message.photo[-1].file_id)
+            return  # stay quiet while receiving
         else:
-            for name, pattern in SOCIAL_PATTERNS.items():
-                if re.match(pattern, update.message.text):
-                    session["socials"][name] = update.message.text
-                    await update.message.reply_text(f"{name} link saved.")
-                    break
+            return
 
-    # Step 9/10 handled in generate_summary
-    else:
-        await update.message.reply_text("Process complete. Use /restart to start over.")
+    # Step 3: Videos/GIFs
+    if step == "videos_gifs":
+        if update.message.text and update.message.text.lower() == "done":
+            session["step"] += 1
+            await update.message.reply_text("Videos/GIFs saved. Send celebrity's full name.")
+            return
+        elif update.message.video or update.message.animation:
+            file_id = update.message.video.file_id if update.message.video else update.message.animation.file_id
+            session["videos_gifs"].append(file_id)
+            return
+        else:
+            return
 
+    # Step 4: Full name
+    if step == "full_name" and update.message.text:
+        session["full_name"] = update.message.text.strip()
+        session["step"] += 1
+        await update.message.reply_text("Send celebrity's alias/social media handles (or '-' if none).")
+        return
 
+    # Step 5: Alias
+    if step == "alias" and update.message.text:
+        session["alias"] = update.message.text.strip()
+        session["step"] += 1
+        await update.message.reply_text("Send celebrity's country of origin.")
+        return
+
+    # Step 6: Country
+    if step == "country" and update.message.text:
+        session["country"] = update.message.text.strip()
+        session["step"] += 1
+        await update.message.reply_text("Send why the celebrity is famous.")
+        return
+
+    # Step 7: Fame
+    if step == "fame" and update.message.text:
+        session["fame"] = update.message.text.strip()
+        session["step"] += 1
+        await update.message.reply_text(
+            "Send celebrity's social media links (YouTube, Instagram, TikTok) one at a time. Send 'Done' when finished."
+        )
+        return
+
+    # Step 8: Socials
+    if step == "socials" and update.message.text:
+        text = update.message.text.strip()
+        if text.lower() == "done":
+            session["step"] += 1
+            await generate_summary(update, context)
+            return
+
+        if text == "-":
+            await update.message.reply_text("Skipped.")
+            return
+
+        # Extract follower number if provided in parentheses
+        follower_match = re.search(r"\((\d+)\)$", text)
+        followers = None
+        if follower_match:
+            followers = follower_match.group(1)
+            text = text[:follower_match.start()].strip()
+
+        # Detect platform automatically
+        platform_name = None
+        for name, pattern in SOCIAL_PATTERNS.items():
+            if re.match(pattern, text, re.IGNORECASE):
+                platform_name = name.capitalize()
+                break
+        if not platform_name:
+            domain_match = re.search(r"https?://(?:www\.)?([^/]+)", text)
+            if domain_match:
+                platform_name = domain_match.group(1).split('.')[0].capitalize()
+            else:
+                platform_name = "Other"
+
+        session["socials"][platform_name] = {"link": text, "followers": followers or "x"}
+        await update.message.reply_text(f"{platform_name} link saved.")
+        return
+
+# Generate summary and albums
 async def generate_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = user_sessions[user_id]
@@ -146,49 +153,53 @@ Alias: {session['alias']}
 Country: {session['country']}
 Fame: {session['fame']}
 Top socials:"""
-    for platform in ["YouTube", "Instagram", "TikTok"]:
-        link = session["socials"].get(platform, "-")
-        followers = "x"  # Placeholder, implement scraping/parsing for real counts
-        summary += f"\n{platform} ({followers}) - {link}"
+
+    for platform, info in session["socials"].items():
+        if info["link"] == "-":
+            continue
+        summary += f"\n{platform} ({info['followers']}) - {info['link']}"
 
     summary += "\n\n==============="
-
     await update.message.reply_text(summary)
 
-    # Prepare media albums (photos + videos)
-    face = session["face_photo"]
-    photos = session["content_photos"]
-    videos = session["content_videos"]
+    # Send albums (face photo first in each)
+    all_files = [session["face_photo"]] + session["pictures"] + session["videos_gifs"]
+    max_per_album = 10
 
-    all_media = [face] + photos + videos
-    albums = []
-    album_size = max(1, len(all_media) // ((len(all_media) - 1) // 10 + 1))  # Even split
+    # Split into chunks evenly
+    chunks = []
+    n = len(all_files)
+    if n <= max_per_album:
+        chunks = [all_files]
+    else:
+        chunk_size = n // ((n + max_per_album - 1) // max_per_album)
+        chunks = [all_files[i:i+chunk_size] for i in range(0, n, chunk_size)]
 
-    for i in range(0, len(all_media), album_size):
+    for chunk in chunks:
         media_group = []
-        for m in all_media[i:i + album_size]:
-            if m in photos or m == face:
-                media_group.append(InputMediaPhoto(m))
+        for file_id in chunk:
+            # Assume video if in videos_gifs, else photo
+            if file_id in session["videos_gifs"]:
+                media_group.append(InputMediaVideo(media=file_id))
             else:
-                media_group.append(InputMediaVideo(m))
-        albums.append(media_group)
+                media_group.append(InputMediaPhoto(media=file_id))
+        await context.bot.send_media_group(chat_id=update.effective_chat.id, media=media_group)
 
-    for album in albums:
-        await context.bot.send_media_group(chat_id=update.effective_chat.id, media=album)
+    await update.message.reply_text("Albums sent. You can /restart anytime to create another.")
 
-    session["step"] = len(STEPS) - 1  # Mark finished
-
-
-if __name__ == "__main__":
-    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Main
+def main():
+    TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
-        raise ValueError("No TELEGRAM_BOT_TOKEN found in environment variables!")
+        raise ValueError("No TELEGRAM_BOT_TOKEN found in environment variables.")
 
     app = ApplicationBuilder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("restart", restart))
-    app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.VIDEO | filters.ANIMATION, handle_message))
+    app.add_handler(CommandHandler("restart", start))
+    app.add_handler(MessageHandler(filters.ALL, handle_message))
 
     print("Bot is running...")
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
