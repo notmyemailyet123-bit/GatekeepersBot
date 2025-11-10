@@ -17,7 +17,7 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "alias": "",
         "country": "",
         "fame": "",
-        "social_links": {}
+        "social_links": {}  # Store as {"platform": {"count": "", "url": ""}}
     }
     await update.message.reply_text("Process restarted. Send a normal face picture of the celebrity to begin.")
 
@@ -50,7 +50,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif update.message.photo:
             data["images"].append(update.message.photo[-1].file_id)
         else:
-            pass  # Ignore non-photo messages quietly
+            pass  # Ignore non-photo messages
 
     # Step 3: Videos and GIFs
     elif step == 2:
@@ -92,14 +92,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = update.message.text.splitlines()
         for line in lines:
             parts = line.split()
+            if not parts:
+                continue
             url = parts[0]
             followers = " ".join(parts[1:]) if len(parts) > 1 else ""
-            if "youtube.com" in url:
-                data["social_links"]["YouTube"] = f"{followers} - {url}"
-            elif "instagram.com" in url:
-                data["social_links"]["Instagram"] = f"{followers} - {url}"
-            elif "tiktok.com" in url:
-                data["social_links"]["TikTok"] = f"{followers} - {url}"
+            if "youtube.com" in url.lower():
+                data["social_links"]["YouTube"] = {"count": followers, "url": url}
+            elif "instagram.com" in url.lower():
+                data["social_links"]["Instagram"] = {"count": followers, "url": url}
+            elif "tiktok.com" in url.lower():
+                data["social_links"]["TikTok"] = {"count": followers, "url": url}
         data["step"] += 1
         await update.message.reply_text("All social info saved. Type 'done' when ready to receive album and summary.")
 
@@ -115,9 +117,9 @@ Alias: {data['alias']}
 Country: {data['country']}
 Fame: {data['fame']}
 Top socials: 
-YouTube ( x ) - {data['social_links'].get('YouTube','')}
-Instagram ( x ) - {data['social_links'].get('Instagram','')}
-TikTok ( x ) - {data['social_links'].get('TikTok','')}
+YouTube ({data['social_links'].get('YouTube', {}).get('count','')}) - {data['social_links'].get('YouTube', {}).get('url','')}
+Instagram ({data['social_links'].get('Instagram', {}).get('count','')}) - {data['social_links'].get('Instagram', {}).get('url','')}
+TikTok ({data['social_links'].get('TikTok', {}).get('count','')}) - {data['social_links'].get('TikTok', {}).get('url','')}
 
 ===============
 """
