@@ -195,13 +195,14 @@ application = Application.builder().token(BOT_TOKEN).build()
 application.add_handler(conv_handler)
 
 PORT = int(os.environ.get("PORT", 10000))
-WEBHOOK_URL = f"https://gatekeepersbot.onrender.com/"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+WEBHOOK_URL = f"https://gatekeepersbot.onrender.com/{BOT_TOKEN}"
 
 logger.info(f"Starting Gatekeepers Album Maker on webhook {WEBHOOK_URL}")
 
 application.run_webhook(
     listen="0.0.0.0",
     port=PORT,
-    url_path="",
+    url_path=BOT_TOKEN,
     webhook_url=WEBHOOK_URL
 )
