@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: gatekeepersbot
+    env: python
+    region: ohio   # You can change this if you prefer a closer region
+    plan: free
+
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+
+    startCommand: gunicorn gatekeepers_album_maker:app
+
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: PORT
+        value: 10000
+
+    autoDeploy: true
+    healthCheckPath: /
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
