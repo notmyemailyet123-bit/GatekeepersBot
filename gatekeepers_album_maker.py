@@ -16,13 +16,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Logging setup
+# ========== Logging ==========
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gatekeepers_album_maker")
 
-# Initialize Telegram bot
+# ========== Setup ==========
 TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")  # Set this in Render env vars
+WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")
 PORT = int(os.getenv("PORT", 10000))
 
 bot_app = Application.builder().token(TOKEN).build()
@@ -35,21 +35,24 @@ user_data = {}
 
 def parse_socials(text):
     socials = {"YouTube": ("", ""), "Instagram": ("", ""), "TikTok": ("", "")}
-    lines = re.split(r"[,\\n]+", text)
+    lines = re.split(r"[,\\n]+", text.strip())
     for line in lines:
-        match = re.search(r"(https?://\\S+)\\s+([\\d\\.]+[MK]?)", line.strip())
+        match = re.search(r"(https?://\S+)\s+([\d\.]+[MK]?)", line.strip(), re.IGNORECASE)
         if match:
             url, followers = match.groups()
-            if "instagram" in url:
+            url = url.strip()
+            followers = followers.strip()
+            if "instagram" in url.lower():
                 socials["Instagram"] = (url, followers)
-            elif "youtube" in url:
+            elif "youtube" in url.lower():
                 socials["YouTube"] = (url, followers)
-            elif "tiktok" in url:
+            elif "tiktok" in url.lower():
                 socials["TikTok"] = (url, followers)
     return socials
 
 
 def split_evenly(files, max_per_album=10):
+    """Evenly split files into albums (max 10 each)."""
     if len(files) <= max_per_album:
         return [files]
     total = len(files)
@@ -79,6 +82,7 @@ async def send_summary(update, data):
         "==============="
     )
     await update.message.reply_text(summary)
+
 
 # ========== Bot Logic ==========
 
@@ -124,13 +128,14 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    text = update.message.text.strip().lower()
+    text = update.message.text.strip()
+    lower_text = text.lower()
     data = user_data.get(uid)
     if not data:
         return
     step = data["step"]
 
-    if text == "done":
+    if lower_text == "done":
         if step == 2:
             data["step"] = 3
             await update.message.reply_text("Step 3: Send all videos and GIFs. Type 'done' when finished.")
@@ -152,38 +157,37 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("All done!")
         return
 
-    # Text input progression
+    # Step logic
     if step == 4:
-        data["name"] = update.message.text.strip()
+        data["name"] = text
         data["step"] = 5
         await update.message.reply_text("Step 5: Send aliases or handles.")
     elif step == 5:
-        data["alias"] = update.message.text.strip()
+        data["alias"] = text
         data["step"] = 6
         await update.message.reply_text("Step 6: Send country of origin.")
     elif step == 6:
-        data["country"] = update.message.text.strip()
+        data["country"] = text
         data["step"] = 7
         await update.message.reply_text("Step 7: Why is this person famous?")
     elif step == 7:
-        data["fame"] = update.message.text.strip()
+        data["fame"] = text
         data["step"] = 8
-        await update.message.reply_text("Step 8: Send social links with follower counts.")
+        await update.message.reply_text("Step 8: Send social links with follower counts (e.g. 'https://instagram.com/... 5.7M').")
     elif step == 8:
-        data["socials"] = update.message.text.strip()
+        data["socials"] = text
         data["step"] = 9
         await update.message.reply_text("Step 9: Type 'done' when finished.")
 
 
-# Register handlers
+# ========== Register Handlers ==========
 bot_app.add_handler(CommandHandler("start", start))
 bot_app.add_handler(CommandHandler("restart", restart))
 bot_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 bot_app.add_handler(MessageHandler(filters.VIDEO, handle_video))
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-# ========== Quart Webhook Routes ==========
-
+# ========== Quart Webhook ==========
 @web_app.post("/webhook")
 async def webhook():
     data = await request.get_json()
@@ -198,9 +202,7 @@ async def index():
 
 
 # ========== Startup ==========
-
 async def init_bot():
-    """Initialize and start Telegram Application before Quart starts."""
     await bot_app.initialize()
     await bot_app.start()
     await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
