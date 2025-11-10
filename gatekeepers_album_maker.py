@@ -1,254 +1,280 @@
 import os
+import math
 import re
-from math import ceil
-from urllib.parse import urlparse
+from dotenv import load_dotenv
 from telegram import (
-    Update, InputMediaPhoto, InputMediaVideo,
-    InlineKeyboardButton, InlineKeyboardMarkup
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    InputMediaVideo,
 )
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, filters, ContextTypes, ConversationHandler
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    CallbackQueryHandler,
+    ConversationHandler,
 )
+from flask import Flask, request
+import asyncio
+from telegram.error import BadRequest
 
-# Conversation states
-FACE, PHOTOS, VIDEOS, NAME, ALIAS, COUNTRY, FAME, SOCIALS, DONE = range(9)
-user_data_store = {}
+load_dotenv()
 
-# Split media evenly across albums
-def split_albums(media_list):
-    n = len(media_list)
-    if n <= 10:
-        return [media_list]
-    num_albums = ceil(n / 10)
-    per_album = n // num_albums
-    remainder = n % num_albums
-    albums, start = [], 0
-    for i in range(num_albums):
-        end = start + per_album + (1 if i < remainder else 0)
-        albums.append(media_list[start:end])
-        start = end
-    return albums
+TOKEN = os.getenv("BOT_TOKEN")
+PORT = int(os.environ.get("PORT", "10000"))
 
-# Start command
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_data_store[user_id] = {
-        "face": None, "photos": [], "videos": [],
-        "name": "", "alias": "", "country": "",
-        "fame": "", "socials": {}
-    }
+(
+    FACE_PHOTO,
+    CONTENT_PHOTOS,
+    CONTENT_VIDEOS,
+    NAME,
+    ALIAS,
+    COUNTRY,
+    FAME,
+    SOCIALS,
+    CONFIRM,
+) = range(9)
+
+app = Flask(__name__)
+
+
+# === START ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await update.message.reply_text("Send the celebrity’s normal face photo.")
+    return FACE_PHOTO
+
+
+# === STEP 1 ===
+async def face_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    photo = update.message.photo[-1]
+    context.user_data["face_photo"] = photo.file_id
+    context.user_data["photos"] = []
+    context.user_data["videos"] = []
     await update.message.reply_text(
-        "👋 Welcome to *Gatekeepers Album Maker!*\n\nPlease send the celebrity’s **face photo** to start.",
-        parse_mode="Markdown"
+        "Now send all photos you want to include. When done, press Next.",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Next ➡️", callback_data="next_videos")]]
+        ),
     )
-    return FACE
+    return CONTENT_PHOTOS
 
-# Step 1 — Face photo
-async def face_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if update.message.photo:
-        user_data_store[user_id]["face"] = update.message.photo[-1].file_id
-        keyboard = [[InlineKeyboardButton("Next ➡️", callback_data="done_photos")]]
-        await update.message.reply_text(
-            "✅ Face photo saved.\n\nNow send all **other photos** (the content ones). Tap *Next* when done.",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
-        )
-        return PHOTOS
-    await update.message.reply_text("⚠️ Please send a valid photo.")
-    return FACE
 
-# Step 2 — Content photos
-async def photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.photo:
-        user_data_store[update.effective_user.id]["photos"].append(update.message.photo[-1].file_id)
-    return PHOTOS
+# === STEP 2 ===
+async def content_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["photos"].append(update.message.photo[-1].file_id)
+    return CONTENT_PHOTOS
 
-async def done_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def next_to_videos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton("Next ➡️", callback_data="done_videos")]]
     await query.message.reply_text(
-        "📸 Photos saved.\n\nNow send **videos or GIFs** and tap *Next* when finished.",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+        "Now send all videos and GIFs you want to include. When done, press Next.",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Next ➡️", callback_data="next_name")]]
+        ),
     )
-    return VIDEOS
+    return CONTENT_VIDEOS
 
-# Step 3 — Videos
-async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if update.message.video:
-        user_data_store[user_id]["videos"].append(update.message.video.file_id)
-    elif update.message.animation:
-        user_data_store[user_id]["videos"].append(update.message.animation.file_id)
-    return VIDEOS
 
-async def done_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# === STEP 3 ===
+async def content_videos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    media = update.message
+    if media.video:
+        context.user_data["videos"].append(media.video.file_id)
+    elif media.animation:
+        context.user_data["videos"].append(media.animation.file_id)
+    return CONTENT_VIDEOS
+
+
+async def next_to_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.message.reply_text("🎬 Videos saved.\n\nSend the celebrity’s **full name.**")
+    await query.message.reply_text("What’s the celebrity’s full name?")
     return NAME
 
-# Step 4–8 — Basic info
-async def name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_store[update.effective_user.id]["name"] = update.message.text
-    await update.message.reply_text("Send the celebrity’s **aliases or handles** (comma-separated).")
+
+# === STEP 4–8 ===
+async def name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["name"] = update.message.text.strip()
+    await update.message.reply_text("Send their alias or social handles.")
     return ALIAS
 
-async def alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_store[update.effective_user.id]["alias"] = update.message.text
-    await update.message.reply_text("Send the celebrity’s **country of origin.**")
+
+async def alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["alias"] = update.message.text.strip()
+    await update.message.reply_text("Send their country of origin.")
     return COUNTRY
 
-async def country(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_store[update.effective_user.id]["country"] = update.message.text
-    await update.message.reply_text("🌟 What is this celebrity famous for?")
+
+async def country(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["country"] = update.message.text.strip()
+    await update.message.reply_text("Why is this person famous?")
     return FAME
 
-async def fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_store[update.effective_user.id]["fame"] = update.message.text
-    await update.message.reply_text(
-        "Now send **social media links** followed by follower counts.\n\n"
-        "Example:\n"
-        "https://www.instagram.com/example 5.7M,\n"
-        "https://youtube.com/@example 118K,\n"
-        "https://www.tiktok.com/@example 3.1M,\n"
-        "https://twitter.com/example 420K"
-    )
+
+async def fame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["fame"] = update.message.text.strip()
+    await update.message.reply_text("Send all social links with follower counts.\nExample:\nhttps://www.instagram.com/username 5.7M")
     return SOCIALS
 
-# Step 9 — Socials parsing
-async def socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    socials_dict = {}
 
-    entries = re.split(r'[,\n]', text)
-    for entry in entries:
-        entry = entry.strip()
-        if not entry:
-            continue
-        parts = entry.split()
-        link = parts[0].strip()
-        followers = parts[1].strip() if len(parts) > 1 else "x"
-        parsed = urlparse(link)
-        domain = parsed.netloc.lower()
-        platform = domain.replace("www.", "").split(".")[0].capitalize()
-        socials_dict[platform] = (link, followers)
+# === STEP 8: SOCIALS ===
+def extract_socials(text: str):
+    platforms = ["instagram", "youtube", "tiktok", "twitter", "x.com", "facebook", "threads"]
+    lines = re.split(r"[,;\n]+", text)
+    socials = {}
+    for line in lines:
+        match = re.search(r"(https?://\S+)\s+([\d\.]+[KkMm]?)", line.strip())
+        if match:
+            url = match.group(1)
+            followers = match.group(2)
+            for p in platforms:
+                if p in url.lower():
+                    socials[p.capitalize()] = (url, followers)
+                    break
+    return socials
 
-    user_data_store[user_id]["socials"] = socials_dict
-    keyboard = [[InlineKeyboardButton("Done ✅", callback_data="finalize")]]
-    await update.message.reply_text(
-        "🌐 Social links saved.\n\nTap **Done** when ready to create albums and summary.",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+
+async def socials(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    socials_text = update.message.text.strip()
+    context.user_data["socials"] = extract_socials(socials_text)
+
+    text = (
+        f"^^^^^^^^^^^^^^^\n\n"
+        f"Name: {context.user_data['name']}\n"
+        f"Alias: {context.user_data['alias']}\n"
+        f"Country: {context.user_data['country']}\n"
+        f"Fame: {context.user_data['fame']}\n"
+        f"Top socials:\n"
     )
-    return DONE
 
-# Step 10 — Final summary and albums
-async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    for name, (url, followers) in context.user_data["socials"].items():
+        text += f"{name} ({followers}) - {url}\n"
+
+    text += "\n===============\n"
+
+    await update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("✅ Confirm", callback_data="confirm")],
+                [InlineKeyboardButton("🔁 Restart", callback_data="restart")],
+                [InlineKeyboardButton("❌ Exit", callback_data="exit")],
+            ]
+        ),
+    )
+    return CONFIRM
+
+
+# === FINAL: OUTPUT ALBUMS ===
+async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
-    data = user_data_store[user_id]
 
-    all_media = [data["face"]] + data["photos"] + data["videos"]
-    albums = split_albums(all_media)
+    media_files = [context.user_data["face_photo"]] + context.user_data["photos"] + context.user_data["videos"]
+    total = len(media_files)
+    if total == 0:
+        await query.message.reply_text("No media found to create album.")
+        return CONFIRM
+
+    chunk_size = math.ceil(total / math.ceil(total / 10))
+    albums = [media_files[i:i + chunk_size] for i in range(0, total, chunk_size)]
 
     for album in albums:
-        media_group = []
-        for fid in album:
-            if fid == data["face"] or fid in data["photos"]:
-                media_group.append(InputMediaPhoto(fid))
+        group = []
+        for file_id in album:
+            if file_id in context.user_data["videos"]:
+                group.append(InputMediaVideo(file_id))
             else:
-                media_group.append(InputMediaVideo(fid))
-        await query.message.reply_media_group(media_group)
+                group.append(InputMediaPhoto(file_id))
+        await query.message.reply_media_group(group)
 
-    socials_text = ""
-    for platform, (link, followers) in sorted(data["socials"].items()):
-        socials_text += f"{platform} ({followers}) - {link}\n"
+    await query.message.reply_text("All albums have been sent! Would you like to restart?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔁 Restart", callback_data="restart"),
+             InlineKeyboardButton("❌ Exit", callback_data="exit")]
+        ])
+    )
+    return CONFIRM
 
-    summary = f"""^^^^^^^^^^^^^^^
 
-Name: {data['name']}
-Alias: {data['alias']}
-Country: {data['country']}
-Fame: {data['fame']}
-Top socials:
-{socials_text}
-==============="""
+# === RESTART & EXIT FIX ===
+async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    try:
+        await query.answer()
+    except BadRequest:
+        pass
+    context.user_data.clear()
+    await query.message.reply_text("✅ Restart successful! Send the celebrity’s normal face photo.")
+    return FACE_PHOTO
 
-    keyboard = [
-        [InlineKeyboardButton("Restart 🔁", callback_data="restart")],
-        [InlineKeyboardButton("Exit 🚪", callback_data="exit")]
-    ]
-    await query.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def exit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    try:
+        await query.answer()
+    except BadRequest:
+        pass
+    await query.message.reply_text("Goodbye! You can type /start anytime to begin again.")
+    context.user_data.clear()
     return ConversationHandler.END
 
-# Restart
-async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    user_data_store[user_id] = {
-        "face": None, "photos": [], "videos": [],
-        "name": "", "alias": "", "country": "",
-        "fame": "", "socials": {}
-    }
-    await query.message.reply_text(
-        "🔁 Restarting process...\n\nPlease send the celebrity’s **face photo** to start again."
-    )
-    return FACE
 
-# Exit
-async def exit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("👋 Thanks for using Gatekeepers Album Maker! Have a great day!")
-    return ConversationHandler.END
+# === CONVERSATION HANDLER ===
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        FACE_PHOTO: [MessageHandler(filters.PHOTO, face_photo)],
+        CONTENT_PHOTOS: [
+            MessageHandler(filters.PHOTO, content_photos),
+            CallbackQueryHandler(next_to_videos, pattern="^next_videos$")
+        ],
+        CONTENT_VIDEOS: [
+            MessageHandler(filters.VIDEO | filters.ANIMATION, content_videos),
+            CallbackQueryHandler(next_to_name, pattern="^next_name$")
+        ],
+        NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, name)],
+        ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, alias)],
+        COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, country)],
+        FAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, fame)],
+        SOCIALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, socials)],
+        CONFIRM: [
+            CallbackQueryHandler(confirm, pattern="^confirm$"),
+            CallbackQueryHandler(restart_callback, pattern="^restart$"),
+            CallbackQueryHandler(exit_callback, pattern="^exit$")
+        ],
+    },
+    fallbacks=[CommandHandler("restart", restart_callback)],
+    per_chat=True,
+    per_user=True,
+)
 
-# Main entry
-def main():
-    bot_token = os.getenv("BOT_TOKEN")
-    app = ApplicationBuilder().token(bot_token).build()
+# === TELEGRAM APP SETUP ===
+telegram_app = ApplicationBuilder().token(TOKEN).build()
+telegram_app.add_handler(conv_handler)
 
-    # Main conversation
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler(["start", "restart"], start)],
-        states={
-            FACE: [MessageHandler(filters.PHOTO, face_photo)],
-            PHOTOS: [
-                MessageHandler(filters.PHOTO, photos),
-                CallbackQueryHandler(done_photos, pattern="^done_photos$")
-            ],
-            VIDEOS: [
-                MessageHandler(filters.VIDEO | filters.ANIMATION, videos),
-                CallbackQueryHandler(done_videos, pattern="^done_videos$")
-            ],
-            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, name)],
-            ALIAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, alias)],
-            COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, country)],
-            FAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, fame)],
-            SOCIALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, socials)],
-            DONE: [CallbackQueryHandler(finalize, pattern="^finalize$")]
-        },
-        fallbacks=[CommandHandler("restart", start)],
-        per_message=True
-    )
 
-    app.add_handler(conv_handler)
+# === FLASK WEBHOOK ===
+@app.route(f"/{TOKEN}", methods=["POST"])
+async def webhook() -> str:
+    update = Update.de_json(await request.get_json(), telegram_app.bot)
+    await telegram_app.process_update(update)
+    return "ok"
 
-    # Global handlers for after conversation ends
-    app.add_handler(CallbackQueryHandler(restart_callback, pattern="^restart$"))
-    app.add_handler(CallbackQueryHandler(exit_callback, pattern="^exit$"))
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/"
-    )
+async def main():
+    await telegram_app.bot.set_webhook(f"https://gatekeepersbot.onrender.com/{TOKEN}")
+    print("Webhook set successfully!")
+
 
 if __name__ == "__main__":
-    main()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
+    app.run(host="0.0.0.0", port=PORT)
