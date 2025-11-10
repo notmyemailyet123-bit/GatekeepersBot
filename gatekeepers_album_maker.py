@@ -1,144 +1,113 @@
-# gatekeepers_album_maker.py
 import os
-import asyncio
-from quart import Quart, request
 from telegram import Update, InputMediaPhoto, InputMediaVideo
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")  # Put your bot token in Render env variables
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://yourbot.onrender.com/
-
-app = Quart(__name__)
-
-# In-memory user data storage
+# Store user data in memory
 user_data = {}
 
-# Steps
-STEPS = [
-    "face_photo",
-    "content_photos",
-    "content_videos",
-    "full_name",
-    "alias",
-    "country",
-    "fame",
-    "social_links",
-    "done"
-]
-
-# --- BOT LOGIC ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Restart command
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_data[chat_id] = {
         "step": 0,
-        "face_photo": None,
-        "content_photos": [],
-        "content_videos": [],
+        "face_image": None,
+        "images": [],
+        "videos": [],
         "full_name": "",
         "alias": "",
         "country": "",
         "fame": "",
         "social_links": {}
     }
-    await context.bot.send_message(chat_id, "Welcome to Gatekeepers Album Maker! Please send a normal face picture of the celebrity to start.")
+    await update.message.reply_text("Process restarted. Send a normal face picture of the celebrity to begin.")
 
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_data.pop(chat_id, None)
-    await start(update, context)
+# Start command
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await restart(update, context)
 
+# Handle messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if chat_id not in user_data:
-        await start(update, context)
-        return
+        await restart(update, context)
+    data = user_data[chat_id]
+    step = data["step"]
 
-    step = user_data[chat_id]["step"]
-
-    # Step 1: face photo
+    # Step 1: Face image
     if step == 0:
         if update.message.photo:
-            user_data[chat_id]["face_photo"] = update.message.photo[-1].file_id
-            user_data[chat_id]["step"] += 1
-            await context.bot.send_message(chat_id, "Face photo received. Now send all pictures you want to post. When done, type 'next'.")
+            data["face_image"] = update.message.photo[-1].file_id
+            data["step"] += 1
+            await update.message.reply_text("Face image received. Send all images you want to post. Type 'done' when finished.")
         else:
-            await context.bot.send_message(chat_id, "Please send a normal face photo.")
+            await update.message.reply_text("Please send a face picture to begin.")
 
-    # Step 2: content photos
+    # Step 2: Content images
     elif step == 1:
-        if update.message.photo:
-            user_data[chat_id]["content_photos"].append(update.message.photo[-1].file_id)
-        elif update.message.text and update.message.text.lower() == "next":
-            user_data[chat_id]["step"] += 1
-            await context.bot.send_message(chat_id, f"{len(user_data[chat_id]['content_photos'])} photos saved. Now send all videos/GIFs. Type 'next' when done.")
+        if update.message.text and update.message.text.lower() == "done":
+            data["step"] += 1
+            await update.message.reply_text("All images saved. Send all videos and GIFs now. Type 'done' when finished.")
+        elif update.message.photo:
+            data["images"].append(update.message.photo[-1].file_id)
         else:
-            await context.bot.send_message(chat_id, "Send photos or 'next' to continue.")
+            pass  # Ignore non-photo messages quietly
 
-    # Step 3: content videos
+    # Step 3: Videos and GIFs
     elif step == 2:
-        if update.message.video or update.message.animation:
+        if update.message.text and update.message.text.lower() == "done":
+            data["step"] += 1
+            await update.message.reply_text("All videos/GIFs saved. Send the celebrity's full name.")
+        elif update.message.video or update.message.animation:
             file_id = update.message.video.file_id if update.message.video else update.message.animation.file_id
-            user_data[chat_id]["content_videos"].append(file_id)
-        elif update.message.text and update.message.text.lower() == "next":
-            user_data[chat_id]["step"] += 1
-            await context.bot.send_message(chat_id, "Videos/GIFs saved. Send the celebrity's full name.")
+            data["videos"].append(file_id)
         else:
-            await context.bot.send_message(chat_id, "Send videos/GIFs or 'next' to continue.")
+            pass  # Ignore other messages
 
-    # Step 4: full name
+    # Step 4: Full name
     elif step == 3:
-        if update.message.text:
-            user_data[chat_id]["full_name"] = update.message.text
-            user_data[chat_id]["step"] += 1
-            await context.bot.send_message(chat_id, "Send alias or social media handles (or 'none').")
-        else:
-            await context.bot.send_message(chat_id, "Please send text.")
+        data["full_name"] = update.message.text
+        data["step"] += 1
+        await update.message.reply_text("Send the celebrity's alias/social media handles if any.")
 
-    # Step 5: alias
+    # Step 5: Alias
     elif step == 4:
-        user_data[chat_id]["alias"] = update.message.text
-        user_data[chat_id]["step"] += 1
-        await context.bot.send_message(chat_id, "Send the country of origin.")
+        data["alias"] = update.message.text
+        data["step"] += 1
+        await update.message.reply_text("Send the celebrity's country of origin.")
 
-    # Step 6: country
+    # Step 6: Country
     elif step == 5:
-        user_data[chat_id]["country"] = update.message.text
-        user_data[chat_id]["step"] += 1
-        await context.bot.send_message(chat_id, "Send why the person is famous.")
+        data["country"] = update.message.text
+        data["step"] += 1
+        await update.message.reply_text("Why is this person famous?")
 
-    # Step 7: fame
+    # Step 7: Fame
     elif step == 6:
-        user_data[chat_id]["fame"] = update.message.text
-        user_data[chat_id]["step"] += 1
-        await context.bot.send_message(chat_id, "Send social media links (YouTube, Instagram, TikTok).")
+        data["fame"] = update.message.text
+        data["step"] += 1
+        await update.message.reply_text("Send social media links with follower counts (one per line, e.g., 'URL 1.2M').")
 
-    # Step 8: social links
+    # Step 8: Social media links
     elif step == 7:
-        links = update.message.text.splitlines()
-        for link in links:
-            if "youtube.com" in link:
-                user_data[chat_id]["social_links"]["YouTube"] = link
-            elif "instagram.com" in link:
-                user_data[chat_id]["social_links"]["Instagram"] = link
-            elif "tiktok.com" in link:
-                user_data[chat_id]["social_links"]["TikTok"] = link
-        user_data[chat_id]["step"] += 1
-        await context.bot.send_message(chat_id, "All info saved. Type 'done' when ready to receive album and summary.")
+        lines = update.message.text.splitlines()
+        for line in lines:
+            parts = line.split()
+            url = parts[0]
+            followers = " ".join(parts[1:]) if len(parts) > 1 else ""
+            if "youtube.com" in url:
+                data["social_links"]["YouTube"] = f"{followers} - {url}"
+            elif "instagram.com" in url:
+                data["social_links"]["Instagram"] = f"{followers} - {url}"
+            elif "tiktok.com" in url:
+                data["social_links"]["TikTok"] = f"{followers} - {url}"
+        data["step"] += 1
+        await update.message.reply_text("All social info saved. Type 'done' when ready to receive album and summary.")
 
-    # Step 9: done
+    # Step 9: Done
     elif step == 8:
         if update.message.text.lower() == "done":
-            await send_summary_and_albums(chat_id, context)
-            user_data[chat_id]["step"] = 0
-        else:
-            await context.bot.send_message(chat_id, "Type 'done' when ready.")
-
-# --- SEND ALBUM AND SUMMARY ---
-async def send_summary_and_albums(chat_id, context):
-    data = user_data[chat_id]
-
-    # 1. Build summary text
-    summary = f"""
+            # Create summary
+            summary = f"""
 ^^^^^^^^^^^^^^^
 
 Name: {data['full_name']}
@@ -152,43 +121,40 @@ TikTok ( x ) - {data['social_links'].get('TikTok','')}
 
 ===============
 """
-    await context.bot.send_message(chat_id, summary)
+            await update.message.reply_text(summary)
 
-    # 2. Build albums
-    media_files = [data['face_photo']] + data['content_photos'] + data['content_videos']
-    album_size = 10
-    albums = [media_files[i:i+album_size] for i in range(0, len(media_files), album_size)]
+            # Prepare albums
+            media_files = [data["face_image"]] + data["images"] + data["videos"]
+            max_per_album = 10
+            total = len(media_files)
+            chunk_size = max_per_album if total <= max_per_album else (total + 1) // ((total + max_per_album - 1) // max_per_album)
+            albums = [media_files[i:i + chunk_size] for i in range(0, total, chunk_size)]
 
-    for album in albums:
-        media_group = []
-        for f in album:
-            if f in data['content_videos']:
-                media_group.append(InputMediaVideo(f))
-            else:
-                media_group.append(InputMediaPhoto(f))
-        await context.bot.send_media_group(chat_id, media_group)
+            # Send albums
+            for album in albums:
+                media_group = []
+                for file_id in album:
+                    if file_id in data["videos"]:
+                        media_group.append(InputMediaVideo(file_id))
+                    else:
+                        media_group.append(InputMediaPhoto(file_id))
+                await context.bot.send_media_group(chat_id, media_group)
 
-# --- WEBHOOK ROUTE ---
-application = ApplicationBuilder().token(TOKEN).build()
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("restart", restart))
-application.add_handler(MessageHandler(filters.ALL, handle_message))
+            data["step"] += 1
+        else:
+            await update.message.reply_text("Type 'done' when you are ready to finish and get the summary and albums.")
 
-@app.route("/", methods=["POST"])
-async def webhook():
-    data = await request.get_json()
-    update = Update.de_json(data, application.bot)
-    await application.update_queue.put(update)
-    return "ok"
+# Main function
+def main():
+    token = os.getenv("TELEGRAM_TOKEN")  # Set your bot token in Render's environment variables
+    app = ApplicationBuilder().token(token).build()
 
-# --- START QUART APP ---
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("restart", restart))
+    app.add_handler(MessageHandler(filters.ALL, handle_message))
+
+    print("Bot is running...")
+    app.run_polling()
+
 if __name__ == "__main__":
-    async def main():
-        await application.initialize()
-        await application.start()
-        # Set webhook
-        await application.bot.set_webhook(WEBHOOK_URL)
-        print(f"Webhook set to {WEBHOOK_URL}")
-        await app.run_task(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-        await application.stop()
-    asyncio.run(main())
+    main()
