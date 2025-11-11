@@ -90,12 +90,12 @@ async def send_summary(update, data):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
-    await update.message.reply_text("Step 1: Send a clear face photo of the celebrity.")
+    await update.message.reply_text("Step 1:\nSend a clear, regular face photo of the celebrity.")
 
 
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
-    await update.message.reply_text("Restarted. Step 1: Send a clear face photo.")
+    await update.message.reply_text("Restarted.\nStep 1:\nSend a clear, regular face photo of the celebrity.")
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -109,7 +109,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step == 1:
         data["face_photo"] = photo_id
         data["step"] = 2
-        await update.message.reply_text("Got it! Now send all other images. Type 'done' when finished.")
+        await update.message.reply_text(
+            "Step 2:\nGot it! Now send all photos only (no videos or GIFs).\n"
+            "Type 'done' when you’ve finished. If you don’t have any, just type 'done'."
+        )
     elif step == 2:
         data["photos"].append(photo_id)
     else:
@@ -140,10 +143,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if lower_text == "done":
         if step == 2:
             data["step"] = 3
-            await update.message.reply_text("Step 3: Send all videos and GIFs. Type 'done' when finished.")
+            await update.message.reply_text(
+                "Step 3:\nGot it! Now send all videos and GIFs.\n"
+                "Type 'done' when finished. If you don’t have any, just type 'done'."
+            )
         elif step == 3:
             data["step"] = 4
-            await update.message.reply_text("Step 4: Send the person’s full name.")
+            await update.message.reply_text("Step 4:\nGot it! Please send the person’s full name.")
         elif step == 9:
             await send_summary(update, data)
             all_files = [data.get("face_photo")] + data["photos"] + data["videos"]
@@ -163,23 +169,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step == 4:
         data["name"] = text
         data["step"] = 5
-        await update.message.reply_text("Step 5: Send aliases or handles.")
+        await update.message.reply_text(
+            "Step 5:\nGot it! Send all aliases and/or handles.\n"
+            "❌ Don’t send links here.\n"
+            "✅ Only write the handles without the @.\n"
+            "Example: Tom Holland, tomholland2013 , TomHolland1996\n"
+            "When you’re done, type 'done'."
+        )
     elif step == 5:
         data["alias"] = text
         data["step"] = 6
-        await update.message.reply_text("Step 6: Send country of origin.")
+        await update.message.reply_text("Step 6:\nGot it! Send their country of origin.")
     elif step == 6:
         data["country"] = text
         data["step"] = 7
-        await update.message.reply_text("Step 7: Why is this person famous?")
+        await update.message.reply_text("Step 7:\nGot it! Why is this person famous?")
     elif step == 7:
         data["fame"] = text
         data["step"] = 8
-        await update.message.reply_text("Step 8: Send social links with follower counts (e.g. 'https://instagram.com/... 5.7M').")
+        await update.message.reply_text(
+            "Step 8:\nGot it! Now send all social media links with follower counts, one per line.\n"
+            "Example:\n"
+            "https://www.instagram.com/example 5.7M\n"
+            "https://youtube.com/@example 118K\n"
+            "https://www.tiktok.com/@example 3.1M\n"
+            "https://twitter.com/example 420K"
+        )
     elif step == 8:
         data["socials"] = text
         data["step"] = 9
-        await update.message.reply_text("Step 9: Type 'done' when finished.")
+        await update.message.reply_text("Step 9:\nGot it! Type 'done' when finished.")
 
 
 # ========== Register Handlers ==========
