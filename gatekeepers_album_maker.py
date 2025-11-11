@@ -44,13 +44,9 @@ user_data = {}
 def format_followers(f):
     """Convert numeric follower counts to shorthand (e.g., 5700000 -> 5.7M)."""
     try:
-        # Remove commas or spaces
         f = f.replace(",", "").strip().upper()
-
-        # If already has M or K, leave it
         if f.endswith(("M", "K")):
             return f
-
         num = float(f)
         if num >= 1_000_000:
             return f"{num / 1_000_000:.1f}M".rstrip("0").rstrip(".")
@@ -72,9 +68,8 @@ def parse_socials(text):
         if match:
             url, followers = match.groups()
             url = url.strip()
-            followers = format_followers(followers.strip())  # ✅ format follower count
+            followers = format_followers(followers.strip())
 
-            # Try to detect platform name
             platform = "Other"
             if "instagram" in url.lower():
                 platform = "Instagram"
@@ -137,6 +132,11 @@ async def send_summary(update, data):
 def done_button():
     """Create a reusable inline button for 'Done'."""
     return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Done", callback_data="done")]])
+
+
+def restart_button():
+    """Inline button to restart the process."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔁 Start Over", callback_data="restart_process")]])
 
 
 # ========== Bot Logic ==========
@@ -239,10 +239,24 @@ async def process_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     media.append(InputMediaPhoto(fid))
             await message_target.reply_media_group(media)
-        await message_target.reply_text("All done!")
+        await message_target.reply_text(
+            "All done!",
+            reply_markup=restart_button()
+        )
 
     if update.callback_query:
         await update.callback_query.answer()
+
+
+async def handle_restart_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the inline 'Start Over' button."""
+    uid = update.effective_user.id
+    user_data[uid] = {"step": 1, "photos": [], "videos": []}
+    await update.callback_query.answer("Starting over!")
+    await update.callback_query.message.reply_text(
+        "<b><u>Step 1:</u></b>\nSend a clear, regular face photo of the celebrity.",
+        parse_mode=ParseMode.HTML
+    )
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -310,6 +324,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 bot_app.add_handler(CommandHandler("start", start))
 bot_app.add_handler(CommandHandler("restart", restart))
 bot_app.add_handler(CallbackQueryHandler(process_done, pattern="^done$"))
+bot_app.add_handler(CallbackQueryHandler(handle_restart_button, pattern="^restart_process$"))
 bot_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 bot_app.add_handler(MessageHandler(filters.VIDEO, handle_video))
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
