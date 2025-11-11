@@ -280,7 +280,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Don’t send links here.\n"
             "✅ Only write the handles without the @.\n"
             "Example: Tom Holland , tomholland2013 , TomHolland1996\n"
-            "When you’re done, type 'done'.",
+            "When you’re done, type 'done'. Or to skip type or press 'done'.",
             parse_mode=ParseMode.HTML,
             reply_markup=done_button(),
         )
@@ -302,7 +302,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["fame"] = text
         data["step"] = 8
         await update.message.reply_text(
-            "<b><u>Step 8:</u></b>\nGot it! Now send all social media links with follower counts, one per line.\n"
+            "<b><u>Step 8:</u></b>\nGot it! Now send all social media links with follower counts, one per line in the same message.\n"
             "Example:\n"
             "https://www.instagram.com/example 5.7M\n"
             "https://youtube.com/@example 118K\n"
