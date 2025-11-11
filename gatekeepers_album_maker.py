@@ -4,13 +4,20 @@ import math
 import asyncio
 import logging
 from quart import Quart, request
-from telegram import Update, InputMediaPhoto, InputMediaVideo
+from telegram import (
+    Update,
+    InputMediaPhoto,
+    InputMediaVideo,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     ContextTypes,
+    CallbackQueryHandler,
     filters,
 )
 from dotenv import load_dotenv
@@ -91,14 +98,7 @@ def split_evenly(files, max_per_album=10):
 
 async def send_summary(update, data):
     socials = parse_socials(data.get("socials", ""))
-    
-    # Only include socials that exist
-    social_lines = []
-    for platform, (url, followers) in socials.items():
-        if url and followers:
-            social_lines.append(f"{platform} ({followers}) - {url}")
-    
-    # Join them neatly, or show nothing if empty
+    social_lines = [f"{p} ({f}) - {u}" for p, (u, f) in socials.items() if u and f]
     social_text = "\n".join(social_lines) if social_lines else "None provided"
 
     summary = (
@@ -111,6 +111,11 @@ async def send_summary(update, data):
         "==============="
     )
     await update.message.reply_text(summary)
+
+
+def done_button():
+    """Create a reusable inline button for 'Done'."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Done", callback_data="done")]])
 
 
 # ========== Bot Logic ==========
@@ -145,7 +150,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "<b><u>Step 2:</u></b>\nGot it! Now send all photos only (no videos or GIFs).\n"
             "Type 'done' when you’ve finished. If you don’t have any, just type 'done'.",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=done_button(),
         )
     elif step == 2:
         data["photos"].append(photo_id)
@@ -165,62 +171,72 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Not expecting videos right now.")
 
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def process_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles 'done' whether typed or button pressed."""
     uid = update.effective_user.id
-    text = update.message.text.strip()
-    lower_text = text.lower()
     data = user_data.get(uid)
     if not data:
         return
+
     step = data["step"]
+    message_target = update.callback_query.message if update.callback_query else update.message
 
-    # "done" handling
+    if step == 2:
+        data["step"] = 3
+        await message_target.reply_text(
+            "<b><u>Step 3:</u></b>\nGot it! Now send all videos and GIFs.\n"
+            "Type 'done' when finished. If you don’t have any, just type 'done'.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=done_button(),
+        )
+    elif step == 3:
+        data["step"] = 4
+        await message_target.reply_text(
+            "<b><u>Step 4:</u></b>\nGot it! Please send the person’s full name.",
+            parse_mode=ParseMode.HTML
+        )
+    elif step == 5:
+        data["step"] = 6
+        await message_target.reply_text(
+            "<b><u>Step 6:</u></b>\nGot it! Send their country of origin.",
+            parse_mode=ParseMode.HTML
+        )
+    elif step in [1, 4, 6, 7, 8]:
+        await message_target.reply_text(
+            "This step is required. Please provide the requested information before continuing.",
+            parse_mode=ParseMode.HTML
+        )
+    elif step == 9:
+        await send_summary(update, data)
+        all_files = [data.get("face_photo")] + data["photos"] + data["videos"]
+        albums = split_evenly(all_files)
+        for album in albums:
+            media = []
+            for fid in album:
+                if fid in data["videos"]:
+                    media.append(InputMediaVideo(fid))
+                else:
+                    media.append(InputMediaPhoto(fid))
+            await message_target.reply_media_group(media)
+        await message_target.reply_text("All done!")
+
+    if update.callback_query:
+        await update.callback_query.answer()
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    lower_text = text.lower()
+    uid = update.effective_user.id
+    data = user_data.get(uid)
+    if not data:
+        return
+
     if lower_text == "done":
-        # Steps 2, 3, 5 can be skipped
-        if step == 2:
-            data["step"] = 3
-            await update.message.reply_text(
-                "<b><u>Step 3:</u></b>\nGot it! Now send all videos and GIFs.\n"
-                "Type 'done' when finished. If you don’t have any, just type 'done'.",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        elif step == 3:
-            data["step"] = 4
-            await update.message.reply_text(
-                "<b><u>Step 4:</u></b>\nGot it! Please send the person’s full name.",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        elif step == 5:
-            data["step"] = 6
-            await update.message.reply_text(
-                "<b><u>Step 6:</u></b>\nGot it! Send their country of origin.",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        elif step in [1, 4, 6, 7, 8]:
-            await update.message.reply_text(
-                "This step is required. Please provide the requested information before continuing.",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        elif step == 9:
-            await send_summary(update, data)
-            all_files = [data.get("face_photo")] + data["photos"] + data["videos"]
-            albums = split_evenly(all_files)
-            for album in albums:
-                media = []
-                for fid in album:
-                    if fid in data["videos"]:
-                        media.append(InputMediaVideo(fid))
-                    else:
-                        media.append(InputMediaPhoto(fid))
-                await update.message.reply_media_group(media)
-            await update.message.reply_text("All done!")
-            return
+        await process_done(update, context)
+        return
 
-    # Step logic
+    step = data["step"]
     if step == 4:
         data["name"] = text
         data["step"] = 5
@@ -230,7 +246,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ Only write the handles without the @.\n"
             "Example: Tom Holland , tomholland2013 , TomHolland1996\n"
             "When you’re done, type 'done'.",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=done_button(),
         )
     elif step == 5:
         data["alias"] = text
@@ -263,13 +280,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["step"] = 9
         await update.message.reply_text(
             "<b><u>Step 9:</u></b>\nGot it! Type 'done' when finished.",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=done_button(),
         )
 
 
 # ========== Register Handlers ==========
 bot_app.add_handler(CommandHandler("start", start))
 bot_app.add_handler(CommandHandler("restart", restart))
+bot_app.add_handler(CallbackQueryHandler(process_done, pattern="^done$"))
 bot_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 bot_app.add_handler(MessageHandler(filters.VIDEO, handle_video))
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
