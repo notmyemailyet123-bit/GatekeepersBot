@@ -148,7 +148,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     step = data["step"]
 
+    # "done" handling
     if lower_text == "done":
+        # Steps 2, 3, 5 can be skipped
         if step == 2:
             data["step"] = 3
             await update.message.reply_text(
@@ -156,12 +158,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Type 'done' when finished. If you don’t have any, just type 'done'.",
                 parse_mode=ParseMode.HTML
             )
+            return
         elif step == 3:
             data["step"] = 4
             await update.message.reply_text(
                 "<b><u>Step 4:</u></b>\nGot it! Please send the person’s full name.",
                 parse_mode=ParseMode.HTML
             )
+            return
+        elif step == 5:
+            data["step"] = 6
+            await update.message.reply_text(
+                "<b><u>Step 6:</u></b>\nGot it! Send their country of origin.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+        elif step in [1, 4, 6, 7, 8]:
+            await update.message.reply_text(
+                "This step is required. Please provide the requested information before continuing.",
+                parse_mode=ParseMode.HTML
+            )
+            return
         elif step == 9:
             await send_summary(update, data)
             all_files = [data.get("face_photo")] + data["photos"] + data["videos"]
@@ -175,7 +192,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         media.append(InputMediaPhoto(fid))
                 await update.message.reply_media_group(media)
             await update.message.reply_text("All done!")
-        return
+            return
 
     # Step logic
     if step == 4:
