@@ -72,16 +72,23 @@ def split_evenly(files, max_per_album=10):
 
 async def send_summary(update, data):
     socials = parse_socials(data.get("socials", ""))
+    
+    # Only include socials that exist
+    social_lines = []
+    for platform, (url, followers) in socials.items():
+        if url and followers:
+            social_lines.append(f"{platform} ({followers}) - {url}")
+    
+    # Join them neatly, or show nothing if empty
+    social_text = "\n".join(social_lines) if social_lines else "None provided"
+
     summary = (
         "^^^^^^^^^^^^^^^\n\n"
         f"Name: {data.get('name','-')}\n"
         f"Alias: {data.get('alias','-')}\n"
         f"Country: {data.get('country','-')}\n"
         f"Fame: {data.get('fame','-')}\n"
-        "Top socials:\n"
-        f"YouTube ({socials['YouTube'][1] or 'x'}) - {socials['YouTube'][0]}\n"
-        f"Instagram ({socials['Instagram'][1] or 'x'}) - {socials['Instagram'][0]}\n"
-        f"TikTok ({socials['TikTok'][1] or 'x'}) - {socials['TikTok'][0]}\n\n"
+        f"Top socials:\n\n{social_text}\n\n"
         "==============="
     )
     await update.message.reply_text(summary)
