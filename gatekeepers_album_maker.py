@@ -41,6 +41,27 @@ user_data = {}
 
 # ========== Helper Functions ==========
 
+def format_followers(f):
+    """Convert numeric follower counts to shorthand (e.g., 5700000 -> 5.7M)."""
+    try:
+        # Remove commas or spaces
+        f = f.replace(",", "").strip().upper()
+
+        # If already has M or K, leave it
+        if f.endswith(("M", "K")):
+            return f
+
+        num = float(f)
+        if num >= 1_000_000:
+            return f"{num / 1_000_000:.1f}M".rstrip("0").rstrip(".")
+        elif num >= 1_000:
+            return f"{num / 1_000:.0f}K"
+        else:
+            return str(int(num)) if num.is_integer() else str(num)
+    except Exception:
+        return f
+
+
 def parse_socials(text):
     """Parse social media links and follower counts (any platform)."""
     socials = {}
@@ -51,7 +72,7 @@ def parse_socials(text):
         if match:
             url, followers = match.groups()
             url = url.strip()
-            followers = followers.strip()
+            followers = format_followers(followers.strip())  # ✅ format follower count
 
             # Try to detect platform name
             platform = "Other"
