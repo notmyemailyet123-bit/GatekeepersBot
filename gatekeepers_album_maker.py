@@ -35,8 +35,8 @@ user_data = {}
 # ========== Helper Functions ==========
 
 def parse_socials(text):
-    """Parse social media links and follower counts."""
-    socials = {"YouTube": ("", ""), "Instagram": ("", ""), "TikTok": ("", "")}
+    """Parse social media links and follower counts (any platform)."""
+    socials = {}
     lines = re.split(r"[,\n]+", text.strip())
 
     for line in lines:
@@ -45,12 +45,31 @@ def parse_socials(text):
             url, followers = match.groups()
             url = url.strip()
             followers = followers.strip()
+
+            # Try to detect platform name
+            platform = "Other"
             if "instagram" in url.lower():
-                socials["Instagram"] = (url, followers)
+                platform = "Instagram"
             elif "youtube" in url.lower():
-                socials["YouTube"] = (url, followers)
+                platform = "YouTube"
             elif "tiktok" in url.lower():
-                socials["TikTok"] = (url, followers)
+                platform = "TikTok"
+            elif "twitter" in url.lower() or "x.com" in url.lower():
+                platform = "Twitter"
+            elif "facebook" in url.lower():
+                platform = "Facebook"
+            elif "threads.net" in url.lower():
+                platform = "Threads"
+            elif "snapchat" in url.lower():
+                platform = "Snapchat"
+            elif "linkedin" in url.lower():
+                platform = "LinkedIn"
+            elif "twitch" in url.lower():
+                platform = "Twitch"
+            elif "pinterest" in url.lower():
+                platform = "Pinterest"
+
+            socials[platform] = (url, followers)
     return socials
 
 
