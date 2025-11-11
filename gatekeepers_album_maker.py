@@ -5,6 +5,7 @@ import asyncio
 import logging
 from quart import Quart, request
 from telegram import Update, InputMediaPhoto, InputMediaVideo
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -90,12 +91,18 @@ async def send_summary(update, data):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
-    await update.message.reply_text("Step 1:\nSend a clear, regular face photo of the celebrity.")
+    await update.message.reply_text(
+        "<b><u>Step 1:</u></b>\nSend a clear, regular face photo of the celebrity.",
+        parse_mode=ParseMode.HTML
+    )
 
 
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
-    await update.message.reply_text("Restarted.\nStep 1:\nSend a clear, regular face photo of the celebrity.")
+    await update.message.reply_text(
+        "Restarted.\n<b><u>Step 1:</u></b>\nSend a clear, regular face photo of the celebrity.",
+        parse_mode=ParseMode.HTML
+    )
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,8 +117,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["face_photo"] = photo_id
         data["step"] = 2
         await update.message.reply_text(
-            "Step 2:\nGot it! Now send all photos only (no videos or GIFs).\n"
-            "Type 'done' when you’ve finished. If you don’t have any, just type 'done'."
+            "<b><u>Step 2:</u></b>\nGot it! Now send all photos only (no videos or GIFs).\n"
+            "Type 'done' when you’ve finished. If you don’t have any, just type 'done'.",
+            parse_mode=ParseMode.HTML
         )
     elif step == 2:
         data["photos"].append(photo_id)
@@ -144,12 +152,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if step == 2:
             data["step"] = 3
             await update.message.reply_text(
-                "Step 3:\nGot it! Now send all videos and GIFs.\n"
-                "Type 'done' when finished. If you don’t have any, just type 'done'."
+                "<b><u>Step 3:</u></b>\nGot it! Now send all videos and GIFs.\n"
+                "Type 'done' when finished. If you don’t have any, just type 'done'.",
+                parse_mode=ParseMode.HTML
             )
         elif step == 3:
             data["step"] = 4
-            await update.message.reply_text("Step 4:\nGot it! Please send the person’s full name.")
+            await update.message.reply_text(
+                "<b><u>Step 4:</u></b>\nGot it! Please send the person’s full name.",
+                parse_mode=ParseMode.HTML
+            )
         elif step == 9:
             await send_summary(update, data)
             all_files = [data.get("face_photo")] + data["photos"] + data["videos"]
@@ -170,35 +182,46 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["name"] = text
         data["step"] = 5
         await update.message.reply_text(
-            "Step 5:\nGot it! Send all aliases and/or handles.\n"
+            "<b><u>Step 5:</u></b>\nGot it! Send all aliases and/or handles.\n"
             "❌ Don’t send links here.\n"
             "✅ Only write the handles without the @.\n"
-            "Example: Tom Holland, tomholland2013 , TomHolland1996\n"
-            "When you’re done, type 'done'."
+            "Example: Tom Holland , tomholland2013 , TomHolland1996\n"
+            "When you’re done, type 'done'.",
+            parse_mode=ParseMode.HTML
         )
     elif step == 5:
         data["alias"] = text
         data["step"] = 6
-        await update.message.reply_text("Step 6:\nGot it! Send their country of origin.")
+        await update.message.reply_text(
+            "<b><u>Step 6:</u></b>\nGot it! Send their country of origin.",
+            parse_mode=ParseMode.HTML
+        )
     elif step == 6:
         data["country"] = text
         data["step"] = 7
-        await update.message.reply_text("Step 7:\nGot it! Why is this person famous?")
+        await update.message.reply_text(
+            "<b><u>Step 7:</u></b>\nGot it! Why is this person famous?",
+            parse_mode=ParseMode.HTML
+        )
     elif step == 7:
         data["fame"] = text
         data["step"] = 8
         await update.message.reply_text(
-            "Step 8:\nGot it! Now send all social media links with follower counts, one per line.\n"
+            "<b><u>Step 8:</u></b>\nGot it! Now send all social media links with follower counts, one per line.\n"
             "Example:\n"
             "https://www.instagram.com/example 5.7M\n"
             "https://youtube.com/@example 118K\n"
             "https://www.tiktok.com/@example 3.1M\n"
-            "https://twitter.com/example 420K"
+            "https://twitter.com/example 420K",
+            parse_mode=ParseMode.HTML
         )
     elif step == 8:
         data["socials"] = text
         data["step"] = 9
-        await update.message.reply_text("Step 9:\nGot it! Type 'done' when finished.")
+        await update.message.reply_text(
+            "<b><u>Step 9:</u></b>\nGot it! Type 'done' when finished.",
+            parse_mode=ParseMode.HTML
+        )
 
 
 # ========== Register Handlers ==========
