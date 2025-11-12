@@ -40,7 +40,6 @@ web_app = Quart(__name__)
 user_data = {}
 
 # ========== Helper Functions ==========
-
 def format_followers(f):
     """Convert numeric follower counts to shorthand (e.g., 5700000 -> 5.7M)."""
     try:
@@ -159,7 +158,6 @@ def done_button():
 
 
 # ========== Bot Logic ==========
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
     await update.message.reply_text(
@@ -357,5 +355,11 @@ async def init_bot():
 
 
 if __name__ == "__main__":
+    import hypercorn.asyncio
+    from hypercorn.config import Config
+
     asyncio.run(init_bot())
-    web_app.run(host="0.0.0.0", port=PORT)
+
+    config = Config()
+    config.bind = [f"0.0.0.0:{PORT}"]
+    asyncio.run(hypercorn.asyncio.serve(web_app, config))
