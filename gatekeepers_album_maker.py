@@ -41,7 +41,6 @@ user_data = {}
 
 # ========== Helper Functions ==========
 def format_followers(f):
-    """Convert numeric follower counts to shorthand (e.g., 5700000 -> 5.7M)."""
     try:
         f = f.replace(",", "").strip().upper()
         if f.endswith(("M", "K")):
@@ -56,19 +55,15 @@ def format_followers(f):
     except Exception:
         return f
 
-
 def parse_socials(text):
-    """Parse social media links and follower counts (any platform)."""
     socials = {}
     lines = re.split(r"[,\n]+", text.strip())
-
     for line in lines:
         match = re.search(r"(https?://\S+)\s+([\d.,]+[MK]?)", line.strip(), re.IGNORECASE)
         if match:
             url, followers = match.groups()
             url = url.strip()
             followers = format_followers(followers.strip())
-
             platform = "Other"
             if "instagram" in url.lower():
                 platform = "Instagram"
@@ -90,13 +85,10 @@ def parse_socials(text):
                 platform = "Twitch"
             elif "pinterest" in url.lower():
                 platform = "Pinterest"
-
             socials[platform] = (url, followers)
     return socials
 
-
 def split_evenly(files, max_per_album=10):
-    """Evenly split files into albums (max 10 each)."""
     if len(files) <= max_per_album:
         return [files]
     total = len(files)
@@ -110,9 +102,7 @@ def split_evenly(files, max_per_album=10):
         start = end
     return albums
 
-
 async def send_summary(update, data):
-    """Send a summary safely for both messages and callback queries."""
     message_target = None
     if hasattr(update, "effective_message") and update.effective_message:
         message_target = update.effective_message
@@ -152,10 +142,8 @@ async def send_summary(update, data):
 
     await message_target.reply_text(summary)
 
-
 def done_button():
     return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Done", callback_data="done")]])
-
 
 # ========== Bot Logic ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -165,7 +153,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
     )
 
-
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
     await update.message.reply_text(
@@ -173,14 +160,12 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
     )
 
-
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     data = user_data.get(uid)
     if not data:
         return
     step = data["step"]
-
     photo_id = update.message.photo[-1].file_id
     if step == 1:
         data["face_photo"] = photo_id
@@ -196,7 +181,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Not expecting photos right now.")
 
-
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     data = user_data.get(uid)
@@ -207,7 +191,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["videos"].append(update.message.video.file_id)
     else:
         await update.message.reply_text("Not expecting videos right now.")
-
 
 async def process_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -259,7 +242,6 @@ async def process_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.callback_query:
         await update.callback_query.answer()
-
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -323,7 +305,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=done_button(),
         )
 
-
 # ========== Register Handlers ==========
 bot_app.add_handler(CommandHandler("start", start))
 bot_app.add_handler(CommandHandler("restart", restart))
@@ -340,26 +321,23 @@ async def webhook():
     await bot_app.process_update(update)
     return "OK", 200
 
-
 @web_app.get("/")
 async def index():
     return "✅ Gatekeepers Album Maker is live!", 200
 
-
 # ========== Startup ==========
-async def init_bot():
-    await bot_app.initialize()
-    await bot_app.start()
-    await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-    logger.info(f"Webhook set to {WEBHOOK_URL}/webhook")
-
-
 if __name__ == "__main__":
     import hypercorn.asyncio
     from hypercorn.config import Config
 
-    asyncio.run(init_bot())
-
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
-    asyncio.run(hypercorn.asyncio.serve(web_app, config))
+
+    async def main():
+        await bot_app.initialize()
+        await bot_app.start()
+        await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+        logger.info(f"Webhook set to {WEBHOOK_URL}/webhook")
+        await hypercorn.asyncio.serve(web_app, config)
+
+    asyncio.run(main())
