@@ -113,30 +113,49 @@ def split_evenly(files, max_per_album=10):
 
 
 async def send_summary(update, data):
+    """Send a summary safely for both messages and callback queries."""
+    message_target = None
+    if hasattr(update, "effective_message") and update.effective_message:
+        message_target = update.effective_message
+    elif hasattr(update, "callback_query") and update.callback_query:
+        message_target = update.callback_query.message
+    elif hasattr(update, "message") and update.message:
+        message_target = update.message
+
+    if not message_target:
+        logger.warning("No valid message target for send_summary.")
+        return
+
     socials = parse_socials(data.get("socials", ""))
     social_lines = [f"{p} ({f}) - {u}" for p, (u, f) in socials.items() if u and f]
-    social_text = "\n".join(social_lines) if social_lines else "None provided"
+    social_text = "\n".join(social_lines)
 
-    summary = (
-        "^^^^^^^^^^^^^^^\n\n"
-        f"Name: {data.get('name','-')}\n"
-        f"Alias: {data.get('alias','-')}\n"
-        f"Country: {data.get('country','-')}\n"
-        f"Fame: {data.get('fame','-')}\n"
-        f"Top socials:\n\n{social_text}\n\n"
-        "==============="
-    )
-    await update.message.reply_text(summary)
+    if social_text:
+        summary = (
+            "^^^^^^^^^^^^^^^\n\n"
+            f"Name: {data.get('name','-')}\n"
+            f"Alias: {data.get('alias','-')}\n"
+            f"Country: {data.get('country','-')}\n"
+            f"Fame: {data.get('fame','-')}\n"
+            f"Top socials:\n{social_text}\n\n"
+            "==============="
+        )
+    else:
+        summary = (
+            "^^^^^^^^^^^^^^^\n\n"
+            f"Name: {data.get('name','-')}\n"
+            f"Alias: {data.get('alias','-')}\n"
+            f"Country: {data.get('country','-')}\n"
+            f"Fame: {data.get('fame','-')}\n"
+            f"Top socials:\nNone provided\n\n"
+            "==============="
+        )
+
+    await message_target.reply_text(summary)
 
 
 def done_button():
-    """Create a reusable inline button for 'Done'."""
     return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Done", callback_data="done")]])
-
-
-def restart_button():
-    """Inline button to restart the process."""
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔁 Start Over", callback_data="restart_process")]])
 
 
 # ========== Bot Logic ==========
@@ -145,7 +164,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
     await update.message.reply_text(
         "<b><u>Step 1:</u></b>\nSend a clear, regular face photo of the celebrity.",
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -153,7 +172,7 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
     await update.message.reply_text(
         "Restarted.\n<b><u>Step 1:</u></b>\nSend a clear, regular face photo of the celebrity.",
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -170,7 +189,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["step"] = 2
         await update.message.reply_text(
             "<b><u>Step 2:</u></b>\nGot it! Now send all photos only (no videos or GIFs).\n"
-            "Type 'done' when you’ve finished. If you don’t have any, just type 'done'.",
+            "When you’re finished, either type 'done' or press the ✅ Done button below.",
             parse_mode=ParseMode.HTML,
             reply_markup=done_button(),
         )
@@ -193,7 +212,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def process_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles 'done' whether typed or button pressed."""
     uid = update.effective_user.id
     data = user_data.get(uid)
     if not data:
@@ -206,7 +224,7 @@ async def process_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["step"] = 3
         await message_target.reply_text(
             "<b><u>Step 3:</u></b>\nGot it! Now send all videos and GIFs.\n"
-            "Type 'done' when finished. If you don’t have any, just type 'done'.",
+            "When you’re finished, either type 'done' or press the ✅ Done button below.",
             parse_mode=ParseMode.HTML,
             reply_markup=done_button(),
         )
@@ -214,18 +232,18 @@ async def process_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["step"] = 4
         await message_target.reply_text(
             "<b><u>Step 4:</u></b>\nGot it! Please send the person’s full name.",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
         )
     elif step == 5:
         data["step"] = 6
         await message_target.reply_text(
             "<b><u>Step 6:</u></b>\nGot it! Send their country of origin.",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
         )
     elif step in [1, 4, 6, 7, 8]:
         await message_target.reply_text(
             "This step is required. Please provide the requested information before continuing.",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
         )
     elif step == 9:
         await send_summary(update, data)
@@ -239,24 +257,10 @@ async def process_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     media.append(InputMediaPhoto(fid))
             await message_target.reply_media_group(media)
-        await message_target.reply_text(
-            "All done!",
-            reply_markup=restart_button()
-        )
+        await message_target.reply_text("All done!")
 
     if update.callback_query:
         await update.callback_query.answer()
-
-
-async def handle_restart_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the inline 'Start Over' button."""
-    uid = update.effective_user.id
-    user_data[uid] = {"step": 1, "photos": [], "videos": []}
-    await update.callback_query.answer("Starting over!")
-    await update.callback_query.message.reply_text(
-        "<b><u>Step 1:</u></b>\nSend a clear, regular face photo of the celebrity.",
-        parse_mode=ParseMode.HTML
-    )
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -280,7 +284,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Don’t send links here.\n"
             "✅ Only write the handles without the @.\n"
             "Example: Tom Holland , tomholland2013 , TomHolland1996\n"
-            "When you’re done, type 'done'. Or to skip type or press 'done'.",
+            "When you’re finished, either type 'done' or press the ✅ Done button below.",
             parse_mode=ParseMode.HTML,
             reply_markup=done_button(),
         )
@@ -289,32 +293,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["step"] = 6
         await update.message.reply_text(
             "<b><u>Step 6:</u></b>\nGot it! Send their country of origin.",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
         )
     elif step == 6:
         data["country"] = text
         data["step"] = 7
         await update.message.reply_text(
             "<b><u>Step 7:</u></b>\nGot it! Why is this person famous?",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
         )
     elif step == 7:
         data["fame"] = text
         data["step"] = 8
         await update.message.reply_text(
-            "<b><u>Step 8:</u></b>\nGot it! Now send all social media links with follower counts, one per line in the same message.\n"
+            "<b><u>Step 8:</u></b>\nGot it! Now send all social media links with follower counts, one per line.\n"
             "Example:\n"
             "https://www.instagram.com/example 5.7M\n"
             "https://youtube.com/@example 118K\n"
             "https://www.tiktok.com/@example 3.1M\n"
-            "https://twitter.com/example 420K",
-            parse_mode=ParseMode.HTML
+            "https://twitter.com/example 420K\n\n"
+            "When you’re finished, either type 'done' or press the ✅ Done button below.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=done_button(),
         )
     elif step == 8:
         data["socials"] = text
         data["step"] = 9
         await update.message.reply_text(
-            "<b><u>Step 9:</u></b>\nGot it! Type 'done' when finished.",
+            "<b><u>Step 9:</u></b>\nGot it! When you’re ready, either type 'done' or press the ✅ Done button below.",
             parse_mode=ParseMode.HTML,
             reply_markup=done_button(),
         )
@@ -324,7 +330,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 bot_app.add_handler(CommandHandler("start", start))
 bot_app.add_handler(CommandHandler("restart", restart))
 bot_app.add_handler(CallbackQueryHandler(process_done, pattern="^done$"))
-bot_app.add_handler(CallbackQueryHandler(handle_restart_button, pattern="^restart_process$"))
 bot_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 bot_app.add_handler(MessageHandler(filters.VIDEO, handle_video))
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
