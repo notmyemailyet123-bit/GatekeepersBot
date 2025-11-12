@@ -1,4 +1,4 @@
-import os
+import os 
 import re
 import math
 import asyncio
@@ -357,5 +357,5 @@ async def init_bot():
 
 
 if __name__ == "__main__":
-    asyncio.get_event_loop().run_until_complete(init_bot())
+    asyncio.run(init_bot())
     web_app.run(host="0.0.0.0", port=PORT)
