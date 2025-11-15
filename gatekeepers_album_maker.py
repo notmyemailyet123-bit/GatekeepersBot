@@ -1,4 +1,4 @@
-import os 
+import os
 import re
 import math
 import asyncio
@@ -55,6 +55,7 @@ def format_followers(f):
     except Exception:
         return f
 
+
 def parse_socials(text):
     socials = {}
     lines = re.split(r"[,\n]+", text.strip())
@@ -88,6 +89,7 @@ def parse_socials(text):
             socials[platform] = (url, followers)
     return socials
 
+
 def split_evenly(files, max_per_album=10):
     if len(files) <= max_per_album:
         return [files]
@@ -101,6 +103,7 @@ def split_evenly(files, max_per_album=10):
         albums.append(files[start:end])
         start = end
     return albums
+
 
 async def send_summary(update, data):
     message_target = None
@@ -142,8 +145,10 @@ async def send_summary(update, data):
 
     await message_target.reply_text(summary)
 
+
 def done_button():
     return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Done", callback_data="done")]])
+
 
 # ========== Bot Logic ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,6 +158,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
     )
 
+
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[update.effective_user.id] = {"step": 1, "photos": [], "videos": []}
     await update.message.reply_text(
@@ -160,12 +166,17 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
     )
 
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # guard if message missing
+    if not update.message or not update.message.photo:
+        return
     uid = update.effective_user.id
     data = user_data.get(uid)
     if not data:
         return
     step = data["step"]
+
     photo_id = update.message.photo[-1].file_id
     if step == 1:
         data["face_photo"] = photo_id
@@ -181,7 +192,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Not expecting photos right now.")
 
+
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # guard if message missing
+    if not update.message or not update.message.video:
+        return
     uid = update.effective_user.id
     data = user_data.get(uid)
     if not data:
@@ -192,14 +207,30 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Not expecting videos right now.")
 
+
 async def process_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    data = user_data.get(uid)
+    # figure out message target safely
+    message_target = None
+    if hasattr(update, "callback_query") and update.callback_query and update.callback_query.message:
+        message_target = update.callback_query.message
+    elif hasattr(update, "message") and update.message:
+        message_target = update.message
+
+    if not message_target:
+        logger.warning("process_done: no message target found")
+        if update.callback_query:
+            await update.callback_query.answer()
+        return
+
+    uid = update.effective_user.id if update.effective_user else None
+    data = user_data.get(uid) if uid else None
     if not data:
+        await message_target.reply_text("Session not found. Please /start to begin.")
+        if update.callback_query:
+            await update.callback_query.answer()
         return
 
     step = data["step"]
-    message_target = update.callback_query.message if update.callback_query else update.message
 
     if step == 2:
         data["step"] = 3
@@ -237,18 +268,42 @@ async def process_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     media.append(InputMediaVideo(fid))
                 else:
                     media.append(InputMediaPhoto(fid))
-            await message_target.reply_media_group(media)
+            # try sending as media group; on failure fall back to individual sends
+            try:
+                await message_target.reply_media_group(media)
+            except Exception as e:
+                logger.exception("reply_media_group failed, falling back to individual sends: %s", e)
+                # Send individually
+                for fid in album:
+                    try:
+                        if fid in data["videos"]:
+                            # prefer reply_video which exists on Message
+                            await message_target.reply_video(fid)
+                        else:
+                            await message_target.reply_photo(fid)
+                    except Exception as e2:
+                        logger.exception("Failed sending individual media: %s", e2)
+                # small pause to avoid hitting rate limits
+                await asyncio.sleep(0.2)
         await message_target.reply_text("All done!")
 
     if update.callback_query:
         await update.callback_query.answer()
 
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # protect against updates where message is None (e.g. channel_post, edited_message, callback-only)
+    if not update.message or not getattr(update.message, "text", None):
+        logger.debug("handle_text: update.message missing or has no text; ignoring.")
+        return
+
     text = update.message.text.strip()
     lower_text = text.lower()
     uid = update.effective_user.id
     data = user_data.get(uid)
     if not data:
+        # no session: advise user to /start
+        await update.message.reply_text("Session not found. Please use /start to begin.")
         return
 
     if lower_text == "done":
@@ -305,6 +360,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=done_button(),
         )
 
+
 # ========== Register Handlers ==========
 bot_app.add_handler(CommandHandler("start", start))
 bot_app.add_handler(CommandHandler("restart", restart))
@@ -318,15 +374,19 @@ bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
 async def webhook():
     data = await request.get_json()
     update = Update.de_json(data, bot_app.bot)
+    # process_update is safe to call from inside a request handler
     await bot_app.process_update(update)
     return "OK", 200
+
 
 @web_app.get("/")
 async def index():
     return "✅ Gatekeepers Album Maker is live!", 200
 
+
 # ========== Startup ==========
 if __name__ == "__main__":
+    # Use Hypercorn to serve the Quart app and run the bot in the same event loop.
     import hypercorn.asyncio
     from hypercorn.config import Config
 
@@ -334,10 +394,19 @@ if __name__ == "__main__":
     config.bind = [f"0.0.0.0:{PORT}"]
 
     async def main():
+        # initialize and start the telegram Application (no polling)
         await bot_app.initialize()
         await bot_app.start()
-        await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-        logger.info(f"Webhook set to {WEBHOOK_URL}/webhook")
+        if WEBHOOK_URL:
+            try:
+                await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+                logger.info("Webhook set to %s/webhook", WEBHOOK_URL)
+            except Exception:
+                logger.exception("Failed to set webhook to %s/webhook", WEBHOOK_URL)
+        else:
+            logger.warning("WEBHOOK_URL not set; webhook won't be configured.")
+
+        # serve the quart app with hypercorn in the same loop
         await hypercorn.asyncio.serve(web_app, config)
 
     asyncio.run(main())
