@@ -125,25 +125,26 @@ async def send_summary(update, data):
     if social_text:
         summary = (
             "^^^^^^^^^^^^^^^\n\n"
-            f"Name: {data.get('name','-')}\n"
-            f"Alias: {data.get('alias','-')}\n"
-            f"Country: {data.get('country','-')}\n"
-            f"Fame: {data.get('fame','-')}\n"
-            f"Top socials:\n{social_text}\n\n"
+            f"<b><u>Name:</u></b> {data.get('name','-')}\n"
+            f"<b><u>Alias:</u></b> {data.get('alias','-')}\n"
+            f"<b><u>Country:</u></b> {data.get('country','-')}\n"
+            f"<b><u>Fame:</u></b> {data.get('fame','-')}\n"
+            f"<b><u>Top socials:</u></b>\n{social_text}\n\n"
             "==============="
         )
     else:
         summary = (
             "^^^^^^^^^^^^^^^\n\n"
-            f"Name: {data.get('name','-')}\n"
-            f"Alias: {data.get('alias','-')}\n"
-            f"Country: {data.get('country','-')}\n"
-            f"Fame: {data.get('fame','-')}\n"
-            f"Top socials:\nNone provided\n\n"
+            f"<b><u>Name:</u></b> {data.get('name','-')}\n"
+            f"<b><u>Alias:</u></b> {data.get('alias','-')}\n"
+            f"<b><u>Country:</u></b> {data.get('country','-')}\n"
+            f"<b><u>Fame:</u></b> {data.get('fame','-')}\n"
+            f"<b><u>Top socials:</u></b>\nNone provided\n\n"
             "==============="
         )
 
-    await message_target.reply_text(summary)
+    await message_target.reply_text(summary, parse_mode=ParseMode.HTML)
+
 
 
 def done_button():
